@@ -36,7 +36,8 @@ class RefreshResult:
 
 def disclosure_window(last: str | None, today: date, backfill_days: int) -> tuple[date, date]:
     if last:
-        start = date.fromisoformat(last) - timedelta(days=OVERLAP_DAYS)
+        # Never start after today, or a bad date in the cache would stop all fetching.
+        start = min(date.fromisoformat(last), today) - timedelta(days=OVERLAP_DAYS)
     else:
         start = today - timedelta(days=backfill_days)
     return start, today

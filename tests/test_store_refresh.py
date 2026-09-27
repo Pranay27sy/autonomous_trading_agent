@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from promoter_tracker import refresh
+from promoter_tracker.nse_client import _fill_disclosure_date as fill_disclosure
 from promoter_tracker.nse_client import parse_response
 from promoter_tracker.prices import BENCHMARK, refresh_prices
 from promoter_tracker.store import Store
@@ -29,6 +30,21 @@ def test_disclosure_window():
     today = date(2024, 3, 1)
     assert refresh.disclosure_window(None, today, 365) == (date(2023, 3, 2), today)
     assert refresh.disclosure_window("2024-02-22", today, 365) == (date(2024, 2, 15), today)
+    # A future date in the cache still leaves a window that ends today.
+    assert refresh.disclosure_window("2062-02-22", today, 365) == (date(2024, 2, 23), today)
+
+
+def test_estimated_future_date_does_not_stall_refresh(tmp_path):
+    store = Store(tmp_path / "t.db")
+    typo = dict(sample()[0], person="Typo", disclosure_date=None, trade_to=None,
+                intimation_date="2062-02-20")
+    store.upsert_trades(sample() + [fill_disclosure(typo)])
+    assert store.last_disclosure_date() == "2024-02-22"
+
+    client = FakeClient()
+    refresh.refresh_all(store, 30, client=client, downloader=lambda t, s: pd.Series(dtype=float),
+                        today=date(2024, 3, 1))
+    assert client.ranges[0] == (date(2024, 2, 15), date(2024, 3, 1))
 
 
 def test_refresh_prices_incremental_and_split_reload(tmp_path):
