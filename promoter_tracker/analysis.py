@@ -52,6 +52,13 @@ def promoter_events(trades: pd.DataFrame, market_only: bool = True,
     if market_only:
         df = df[df["mode"].map(is_market_trade)]
     fallback = df["disclosure_date"] if event_date != "disclosure_date" else df["trade_to"]
+    if event_date == "disclosure_date":
+        # A filled-in disclosure date is earlier than the public saw the filing, so
+        # returns measured from it would use information nobody could trade on.
+        estimated = df.get("disclosure_estimated", pd.Series(False, index=df.index))
+        df["returns_valid"] = ~(estimated.fillna(False).astype(bool) | df["disclosure_date"].isna())
+    else:
+        df["returns_valid"] = True
     df["event_date"] = df[event_date].fillna(fallback)
     df = df[df["event_date"].notna()]
     df["holding_change_pct"] = df["holding_after_pct"] - df["holding_before_pct"]
@@ -81,12 +88,19 @@ def event_returns(events: pd.DataFrame, price_lookup, benchmark: pd.Series | Non
                   horizons=HORIZONS) -> pd.DataFrame:
     """Add ret_{h} and exc_{h} (return minus benchmark) columns to events.
 
+    Rows with returns_valid False (estimated disclosure dates) get NaN.
+
     price_lookup(symbol) -> pd.Series of closes (empty if unknown).
     """
     events = events.copy()
     cache: dict[str, pd.Series] = {}
     ret_rows, exc_rows = [], []
-    for sym, when in zip(events["symbol"], events["event_date"]):
+    valid = events["returns_valid"] if "returns_valid" in events else [True] * len(events)
+    for sym, when, ok in zip(events["symbol"], events["event_date"], valid):
+        if not ok:
+            ret_rows.append({h: np.nan for h in horizons})
+            exc_rows.append({h: np.nan for h in horizons})
+            continue
         if sym not in cache:
             cache[sym] = price_lookup(sym)
         px = cache[sym]

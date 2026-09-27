@@ -53,23 +53,39 @@ def refresh_all(store: Store, backfill_days: int = 365, client: NSEClient | None
         start = since
     result = RefreshResult(start, end)
 
+    store.mark_refresh_attempt()
     progress(f"Fetching NSE insider disclosures {start} → {end}")
     client = client or NSEClient(progress=progress)
+
+    def save(chunk: list[dict]) -> None:
+        # Saved chunk by chunk so a failure late in a long backfill keeps the rest.
+        result.new_trades += store.upsert_trades(chunk)
+
+    pending = store.failed_filings()
+    failed: list[dict] = []
     try:
-        trades = client.fetch_pit(start, end)
-        result.new_trades = store.upsert_trades(trades)
+        client.fetch_pit(start, end, on_chunk=save)
+        failed += getattr(client, "failed_filings", [])
+        if pending:
+            progress(f"Retrying {len(pending)} filings that failed to download before")
+            save(client.retry_filings(pending))
+            pending = []
+            failed += getattr(client, "failed_filings", [])
     except Exception as err:
         log.exception("Disclosure refresh failed")
         result.errors.append(f"NSE disclosures: {err}")
+        failed += getattr(client, "failed_filings", [])
     else:
-        failed = getattr(client, "failed_filings", [])
-        if failed:
-            result.errors.append(f"NSE disclosures: {len(failed)} filings could not be downloaded")
         latest = store.last_disclosure_date()
         if latest and (end - date.fromisoformat(latest)).days > QUIET_DAYS_WARNING:
             result.warnings.append(
                 f"NSE returned no disclosures after {latest}. Its API may have changed again."
             )
+    # Anything not retried yet stays queued alongside this run's failures.
+    store.set_failed_filings(pending + failed)
+    if failed:
+        result.errors.append(f"NSE disclosures: {len(failed)} filings could not be downloaded; "
+                             "they will be retried on the next refresh")
 
     events = analysis.promoter_events(store.load_trades(), market_only=False)
     symbols = sorted(set(events["symbol"]))

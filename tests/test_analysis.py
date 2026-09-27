@@ -88,3 +88,17 @@ def test_summarize_clusters_and_leaderboard(trades):
     lb = analysis.leaderboard(ev)
     assert lb.iloc[0]["symbol"] == "ABCLTD"
     assert lb.iloc[-1]["symbol"] == "XYZIND" and lb.iloc[-1]["net_value"] == -40_000_000
+
+
+def test_no_returns_from_estimated_disclosure_dates(trades):
+    trades = trades.copy()
+    trades.loc[trades["person"] == "Ravi Kumar", "disclosure_estimated"] = True
+    ev = analysis.promoter_events(trades)
+    out = analysis.event_returns(ev, lambda s: _prices(), _prices(), horizons=(5,))
+    ravi = out[out["person"] == "Ravi Kumar"].iloc[0]
+    assert np.isnan(ravi["ret_5"]) and np.isnan(ravi["exc_5"])
+    assert out[out["person"] != "Ravi Kumar"]["ret_5"].notna().any()
+    # Measuring from the promoter's own trade date is unaffected.
+    by_trade = analysis.promoter_events(trades, event_date="trade_to")
+    out = analysis.event_returns(by_trade, lambda s: _prices(), _prices(), horizons=(5,))
+    assert out[out["person"] == "Ravi Kumar"]["ret_5"].notna().all()
