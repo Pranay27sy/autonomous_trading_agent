@@ -117,30 +117,58 @@ def test_fetch_pit_uses_legacy_then_xbrl_endpoint(monkeypatch):
         urls.append((url, params["from_date"], params["to_date"]))
         return legacy if url == nse_client.PIT_URL else listing
 
-    def fake_get_text(self, url):
+    def fake_get_bytes(self, url):
         fetched.append(url)
         if url == "bad.xml":
             raise RuntimeError("404")
-        return xml
+        return xml.encode("utf-8")
 
     monkeypatch.setattr(nse_client.NSEClient, "_get_json", fake_get_json)
-    monkeypatch.setattr(nse_client.NSEClient, "_get_text", fake_get_text)
+    monkeypatch.setattr(nse_client.NSEClient, "_get_bytes", fake_get_bytes)
     monkeypatch.setattr(nse_client.time, "sleep", lambda s: None)
     client = nse_client.NSEClient()
-    trades = client.fetch_pit(date(2026, 4, 20), date(2026, 5, 10))
+    chunks = []
+    trades = client.fetch_pit(date(2026, 4, 20), date(2026, 5, 10), on_chunk=chunks.append)
 
     assert urls == [(nse_client.PIT_URL, "20-04-2026", "02-05-2026"),
                     (nse_client.PIT_XBRL_URL, "03-05-2026", "10-05-2026")]
     assert sorted(fetched) == ["bad.xml", "rev.xml"]  # the revised original is skipped
-    assert client.failed_filings == ["bad.xml"]
+    assert [f["xmlFileName"] for f in client.failed_filings] == ["bad.xml"]
     assert len(trades) == 7 + 3
+    assert [len(c) for c in chunks] == [7, 3]  # each chunk handed over as it finishes
     assert trades[-1]["disclosure_date"] == "2026-09-27"
+    assert trades[-1]["filing_id"] == "DAMODARIND:2"
+    assert trades[-1]["replaces"] == "DAMODARIND:1"
+
+
+def test_unexpected_filing_error_is_recorded_not_raised(monkeypatch):
+    def boom(self, url):
+        raise KeyError("surprise")
+
+    monkeypatch.setattr(nse_client.NSEClient, "_get_bytes", boom)
+    client = nse_client.NSEClient()
+    filing = {"symbol": "A", "appId": "9", "xmlFileName": "x.xml"}
+    assert client.retry_filings([filing]) == []
+    assert client.failed_filings == [filing]
+
+
+def test_pct_keeps_values_already_in_percent():
+    assert nse_client._pct("0.0102") == 1.02
+    assert nse_client._pct("12.5") == 12.5
+    assert nse_client._pct(None) is None
+
+
+def test_missing_disclosure_date_is_flagged_as_estimated():
+    [t] = parse_response([{"symbol": "A", "intimDt": "02-Jan-2024"}])
+    assert t["disclosure_date"] == "2024-01-02" and t["disclosure_estimated"] == 1
+    [t] = parse_response([{"symbol": "A", "date": "03-Jan-2024"}])
+    assert t["disclosure_estimated"] == 0
 
 
 def test_archive_403_pauses_all_workers_then_retries(monkeypatch):
     class Resp:
         def __init__(self, code):
-            self.status_code, self.text = code, "<xml/>"
+            self.status_code, self.content = code, b"<xml/>"
 
         def raise_for_status(self):
             if self.status_code >= 400:
@@ -149,8 +177,8 @@ def test_archive_403_pauses_all_workers_then_retries(monkeypatch):
     codes = iter([403, 200])
     sleeps = []
     client = nse_client.NSEClient()
-    monkeypatch.setattr(client.session, "get", lambda url, timeout: Resp(next(codes)))
+    monkeypatch.setattr(client._worker_session(), "get", lambda url, timeout: Resp(next(codes)))
     monkeypatch.setattr(nse_client.time, "sleep", sleeps.append)
-    assert client._get_text("f.xml") == "<xml/>"
+    assert client._get_bytes("f.xml") == b"<xml/>"
     assert max(sleeps) > nse_client.ARCHIVE_COOLDOWN - 5  # waited out the cooldown
     assert client._blocked_until > 0

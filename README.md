@@ -21,7 +21,9 @@ and what the share price did afterwards.
 
 Everything is cached in `data/promoter.db` (SQLite). Refreshes are incremental:
 only disclosures since the last one (with a 7-day overlap for late filings) and
-only new price bars are downloaded. The app refreshes itself when the cache is
+only new price bars are downloaded. Disclosures are saved one 30-day chunk at a time,
+filings whose XBRL file failed to download are retried on the next refresh, and a
+revised filing replaces the original's rows. The app refreshes itself when the cache is
 more than 6 hours old, and there's a **Refresh latest data** button.
 
 ### Run

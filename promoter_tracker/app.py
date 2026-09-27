@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -32,15 +33,42 @@ def get_store() -> Store:
     return Store(DB_PATH)
 
 
+@st.cache_resource
+def refresh_lock() -> threading.Lock:
+    # Shared by every browser session, so only one refresh runs at a time.
+    return threading.Lock()
+
+
 store = get_store()
 
 
-def last_refresh() -> datetime | None:
-    raw = store.get_meta("last_refresh")
+def _meta_time(key: str) -> datetime | None:
+    raw = store.get_meta(key)
     return datetime.fromisoformat(raw) if raw else None
 
 
+def last_refresh() -> datetime | None:
+    return _meta_time("last_refresh")
+
+
+def is_stale() -> bool:
+    # Count failed attempts too, or a refresh with errors would rerun on every new session.
+    times = [t for t in (last_refresh(), _meta_time("last_refresh_attempt")) if t]
+    return not times or datetime.now(timezone.utc) - max(times) > STALE_AFTER
+
+
 def run_refresh(backfill_days: int) -> None:
+    lock = refresh_lock()
+    if not lock.acquire(blocking=False):
+        st.sidebar.info("A refresh is already running in another tab. Reload when it finishes.")
+        return
+    try:
+        _run_refresh(backfill_days)
+    finally:
+        lock.release()
+
+
+def _run_refresh(backfill_days: int) -> None:
     with st.status("Pulling latest data…", expanded=True) as status:
         res = refresh_all(store, backfill_days, progress=status.write)
         msg = f"{res.new_trades} new disclosures, {res.price_rows} price rows"
@@ -74,9 +102,7 @@ backfill = st.sidebar.number_input("History on first load (days)", 30, 3650, 365
 if st.sidebar.button("🔄 Refresh latest data", use_container_width=True):
     run_refresh(int(backfill))
     lr = last_refresh()
-elif AUTO_REFRESH and "auto_refreshed" not in st.session_state and (
-    lr is None or datetime.now(timezone.utc) - lr > STALE_AFTER
-):
+elif AUTO_REFRESH and "auto_refreshed" not in st.session_state and is_stale():
     st.session_state["auto_refreshed"] = True
     run_refresh(int(backfill))
     lr = last_refresh()
@@ -194,7 +220,7 @@ with tab_stock:
                 if d.empty:
                     continue
                 y = [px.asof(t) for t in d["event_date"]]
-                size = 8 + 22 * (d["value"].fillna(0) / max(sev["value"].max() or 1, 1)) ** 0.5
+                size = 8 + 22 * (d["value"].fillna(0) / max(sev["value"].fillna(0).max(), 1)) ** 0.5
                 fig.add_trace(go.Scatter(
                     x=d["event_date"], y=y, mode="markers", name=direction.title(),
                     marker=dict(color=color, size=size, symbol=symbol_shape,
@@ -265,10 +291,12 @@ with tab_stats:
     fmt = {"net_value": st.column_config.NumberColumn("Net (₹ cr)", format="%+.2f")}
     l1, l2 = st.columns(2)
     l1.caption("Top net buyers")
-    l1.dataframe(lb.head(15), hide_index=True, use_container_width=True, column_config=fmt)
+    # Split on the sign so a stock never shows up in both lists.
+    l1.dataframe(lb[lb["net_value"] > 0].head(15), hide_index=True,
+                 use_container_width=True, column_config=fmt)
     l2.caption("Top net sellers")
-    l2.dataframe(lb.tail(15).iloc[::-1], hide_index=True, use_container_width=True,
-                 column_config=fmt)
+    l2.dataframe(lb[lb["net_value"] < 0].tail(15).iloc[::-1], hide_index=True,
+                 use_container_width=True, column_config=fmt)
 
 st.caption("Data: NSE insider-trading (SEBI PIT) disclosures and Yahoo Finance prices, "
            "both unofficial free sources. Disclosures can lag trades by ~4 trading days. "

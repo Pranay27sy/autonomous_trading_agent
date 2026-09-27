@@ -132,11 +132,20 @@ def parse_record(record: dict) -> dict | None:
         "intimation_date": parse_date(_pick(record, "intimation_date")),
         "disclosure_date": parse_date(_pick(record, "disclosure_date")),
     }
-    if out["disclosure_date"] is None:
-        out["disclosure_date"] = out["intimation_date"] or out["trade_to"]
-    if out["disclosure_date"] is None:
-        return None
-    return out
+    return _fill_disclosure_date(out)
+
+
+def _fill_disclosure_date(trade: dict) -> dict | None:
+    """Fall back to an earlier date when the disclosure date is missing and flag it.
+
+    The fallback is before the public saw the filing, so returns measured from it
+    would be look-ahead; analysis skips returns for flagged rows.
+    """
+    trade["disclosure_estimated"] = 0
+    if trade["disclosure_date"] is None:
+        trade["disclosure_date"] = trade["intimation_date"] or trade["trade_to"]
+        trade["disclosure_estimated"] = 1
+    return trade if trade["disclosure_date"] is not None else None
 
 
 def _str(value: Any) -> str:
@@ -156,13 +165,20 @@ def _local(tag: str) -> str:
 
 def _pct(raw: Any) -> float | None:
     # XBRL stores shareholding as a fraction (0.0102); the rest of the app uses 1.02.
+    # A few filers type the percentage itself; a fraction can't exceed 1, so keep those.
     value = parse_number(raw)
-    return None if value is None else round(value * 100, 4)
+    if value is None:
+        return None
+    return round(value if value > 1 else value * 100, 4)
 
 
-def parse_xbrl(xml_text: str, disclosure_date: str | None = None) -> list[dict]:
-    """Parse one PIT XBRL filing (one trade per disclosure context)."""
-    root = ET.fromstring(xml_text.encode("utf-8") if isinstance(xml_text, str) else xml_text)
+def parse_xbrl(xml: str | bytes, disclosure_date: str | None = None) -> list[dict]:
+    """Parse one PIT XBRL filing (one trade per disclosure context).
+
+    Pass the raw bytes when you have them so the parser honours the file's own
+    encoding declaration.
+    """
+    root = ET.fromstring(xml.encode("utf-8") if isinstance(xml, str) else xml)
     contexts: dict[str, dict[str, str]] = {}
     for el in root:
         ctx = el.get("contextRef")
@@ -199,16 +215,18 @@ def parse_xbrl(xml_text: str, disclosure_date: str | None = None) -> list[dict]:
             "intimation_date": parse_date(fields.get("DateOfIntimationToCompany")),
             "disclosure_date": filed,
         }
-        if trade["disclosure_date"] is None:
-            trade["disclosure_date"] = trade["intimation_date"] or trade["trade_to"]
-        if trade["disclosure_date"] is not None:
+        if _fill_disclosure_date(trade) is not None:
             trades.append(trade)
     return trades
 
 
-def superseded_filings(filings: list[dict]) -> set[tuple[str, str]]:
-    """(symbol, appId) of originals that a revision in the same listing replaces."""
-    return {(f.get("symbol"), str(f["prevAppId"])) for f in filings
+def filing_id(symbol: Any, app_id: Any) -> str:
+    return f"{symbol}:{app_id}"
+
+
+def superseded_filings(filings: list[dict]) -> set[str]:
+    """filing_id of originals that a revision in the same listing replaces."""
+    return {filing_id(f.get("symbol"), f["prevAppId"]) for f in filings
             if f.get("prevAppId") not in (None, "")}
 
 
@@ -230,10 +248,23 @@ class NSEClient:
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
         self._primed = False
-        # XBRL files that could not be downloaded in the last fetch_pit call.
-        self.failed_filings: list[str] = []
+        # Listing entries whose XBRL file could not be downloaded in the last
+        # fetch_pit / retry_filings call; pass them to retry_filings later.
+        self.failed_filings: list[dict] = []
         self._lock = threading.Lock()
         self._blocked_until = 0.0
+        # requests.Session isn't thread-safe, so each download worker gets its own.
+        self._local = threading.local()
+
+    def _worker_session(self) -> requests.Session:
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = requests.Session()
+            session.headers.update(HEADERS)
+            with self._lock:
+                session.cookies.update(self.session.cookies)
+            self._local.session = session
+        return session
 
     def _prime(self) -> None:
         # The API returns 401/403 unless the homepage cookies are present.
@@ -259,7 +290,7 @@ class NSEClient:
                 time.sleep(self.pause * attempt * 2)
         raise RuntimeError(f"NSE request failed after {self.retries} attempts: {last_err}")
 
-    def _get_text(self, url: str) -> str:
+    def _get_bytes(self, url: str) -> bytes:
         last_err: Exception | None = None
         for attempt in range(1, self.retries + 1):
             with self._lock:
@@ -267,7 +298,7 @@ class NSEClient:
             if wait > 0:
                 time.sleep(wait)
             try:
-                resp = self.session.get(url, timeout=self.timeout)
+                resp = self._worker_session().get(url, timeout=self.timeout)
                 if resp.status_code == 403:
                     with self._lock:
                         until = time.monotonic() + ARCHIVE_COOLDOWN * attempt
@@ -276,22 +307,32 @@ class NSEClient:
                             self.progress(f"  NSE is rate-limiting; pausing {ARCHIVE_COOLDOWN * attempt}s")
                 resp.raise_for_status()
                 time.sleep(self.pause / 5)
-                return resp.text
+                return resp.content
             except requests.RequestException as err:
                 last_err = err
                 time.sleep(self.pause * attempt)
         raise RuntimeError(f"{url}: {last_err}")
 
-    def fetch_pit(self, start: date, end: date, symbol: str | None = None) -> list[dict]:
-        """Fetch parsed PIT disclosures between start and end (inclusive)."""
+    def fetch_pit(self, start: date, end: date, symbol: str | None = None,
+                  on_chunk: Callable[[list[dict]], None] | None = None) -> list[dict]:
+        """Fetch parsed PIT disclosures between start and end (inclusive).
+
+        on_chunk receives each date chunk's trades as soon as they are parsed, so a
+        caller can save progress before a later chunk fails.
+        """
         self.failed_filings = []
-        trades: list[dict] = []
+        sink = _Sink(on_chunk)
         if start <= LEGACY_LAST_DAY:
-            trades.extend(self._fetch_legacy(start, min(end, LEGACY_LAST_DAY), symbol))
+            self._fetch_legacy(start, min(end, LEGACY_LAST_DAY), symbol, sink)
         if end > LEGACY_LAST_DAY:
             first_xbrl_day = LEGACY_LAST_DAY + timedelta(days=1)
-            trades.extend(self._fetch_xbrl(max(start, first_xbrl_day), end, symbol))
-        return trades
+            self._fetch_xbrl(max(start, first_xbrl_day), end, symbol, sink)
+        return sink.trades
+
+    def retry_filings(self, filings: list[dict]) -> list[dict]:
+        """Download listing entries that failed before (from failed_filings)."""
+        self.failed_filings = []
+        return self._download(filings)
 
     def _params(self, chunk_start: date, chunk_end: date, symbol: str | None) -> dict:
         params = {
@@ -303,35 +344,58 @@ class NSEClient:
             params["symbol"] = symbol.upper()
         return params
 
-    def _fetch_legacy(self, start: date, end: date, symbol: str | None) -> list[dict]:
-        trades: list[dict] = []
+    def _fetch_legacy(self, start: date, end: date, symbol: str | None, sink: _Sink) -> None:
         for chunk_start, chunk_end in date_chunks(start, end):
-            trades.extend(parse_response(self._get_json(PIT_URL, self._params(chunk_start, chunk_end, symbol))))
+            sink(parse_response(self._get_json(PIT_URL, self._params(chunk_start, chunk_end, symbol))))
             time.sleep(self.pause)
-        return trades
 
-    def _fetch_xbrl(self, start: date, end: date, symbol: str | None) -> list[dict]:
-        trades: list[dict] = []
+    def _fetch_xbrl(self, start: date, end: date, symbol: str | None, sink: _Sink) -> None:
         for chunk_start, chunk_end in date_chunks(start, end):
             payload = self._get_json(PIT_XBRL_URL, self._params(chunk_start, chunk_end, symbol))
             filings = payload.get("data", []) if isinstance(payload, dict) else payload or []
             replaced = superseded_filings(filings)
             filings = [f for f in filings if f.get("xmlFileName")
-                       and (f.get("symbol"), str(f.get("appId"))) not in replaced]
+                       and filing_id(f.get("symbol"), f.get("appId")) not in replaced]
             self.progress(f"Downloading {len(filings)} filings ({chunk_start} → {chunk_end})")
-            with ThreadPoolExecutor(XBRL_WORKERS) as pool:
-                for i, parsed in enumerate(pool.map(self._fetch_filing, filings), 1):
-                    trades.extend(parsed)
-                    if i % 200 == 0:
-                        self.progress(f"  {i}/{len(filings)} filings")
+            sink(self._download(filings))
             time.sleep(self.pause)
+
+    def _download(self, filings: list[dict]) -> list[dict]:
+        trades: list[dict] = []
+        with ThreadPoolExecutor(XBRL_WORKERS) as pool:
+            for i, parsed in enumerate(pool.map(self._fetch_filing, filings), 1):
+                trades.extend(parsed)
+                if i % 200 == 0:
+                    self.progress(f"  {i}/{len(filings)} filings")
         return trades
 
     def _fetch_filing(self, filing: dict) -> list[dict]:
         url = filing["xmlFileName"]
         try:
-            return parse_xbrl(self._get_text(url), parse_date(filing.get("broadcastDateTime")))
-        except (RuntimeError, ET.ParseError) as err:
+            trades = parse_xbrl(self._get_bytes(url), parse_date(filing.get("broadcastDateTime")))
+        except Exception as err:  # one bad filing must not abort the whole download
             log.warning("Skipping filing %s: %s", url, err)
-            self.failed_filings.append(url)
+            with self._lock:
+                self.failed_filings.append(filing)
             return []
+        # Tag trades with their filing so a later revision can replace them.
+        fid = filing_id(filing.get("symbol"), filing.get("appId"))
+        prev = filing.get("prevAppId")
+        for t in trades:
+            t["filing_id"] = fid
+            if prev not in (None, ""):
+                t["replaces"] = filing_id(filing.get("symbol"), prev)
+        return trades
+
+
+class _Sink:
+    """Collects trades and forwards each chunk to an optional callback."""
+
+    def __init__(self, on_chunk: Callable[[list[dict]], None] | None):
+        self.on_chunk = on_chunk
+        self.trades: list[dict] = []
+
+    def __call__(self, chunk: list[dict]) -> None:
+        self.trades.extend(chunk)
+        if self.on_chunk is not None:
+            self.on_chunk(chunk)
