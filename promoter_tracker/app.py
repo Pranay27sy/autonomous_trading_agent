@@ -84,7 +84,9 @@ def _run_refresh(backfill_days: int) -> None:
 
 
 @st.cache_data(show_spinner=False)
-def load_events(market_only: bool, event_basis: str, _version: str) -> pd.DataFrame:
+def load_events(market_only: bool, event_basis: str, version: str) -> pd.DataFrame:
+    # version (the last refresh time) must be hashed so a refresh made outside the
+    # app, e.g. by the scheduled CLI, invalidates the cache; "_" args are not hashed.
     events = analysis.promoter_events(store.load_trades(), market_only, event_basis)
     if events.empty:
         return events

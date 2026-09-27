@@ -132,8 +132,12 @@ class Store:
         return df
 
     def last_disclosure_date(self) -> str | None:
+        # Estimated dates come from filer-typed fields; a typo like 2062 must not
+        # push the next refresh window into the future.
         with self._lock:
-            row = self.conn.execute("SELECT MAX(disclosure_date) FROM trades").fetchone()
+            row = self.conn.execute(
+                "SELECT MAX(disclosure_date) FROM trades WHERE NOT COALESCE(disclosure_estimated, 0)"
+            ).fetchone()
         return row[0] if row else None
 
     # --- prices -----------------------------------------------------------
