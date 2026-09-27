@@ -1,0 +1,33 @@
+{
+  "acqNameList": [],
+  "data": [
+    {"symbol": "ABCLTD", "company": "ABC Limited", "acqName": "Ravi Kumar", "personCategory": "Promoters",
+     "secType": "Equity Shares", "secAcq": "10000", "secVal": "2500000", "tdpTransactionType": "Buy",
+     "acqMode": "Market Purchase", "befAcqSharesPer": "45.10", "afterAcqSharesPer": "45.20",
+     "acqfromDt": "02-Jan-2024", "acqtoDt": "03-Jan-2024", "intimDt": "04-Jan-2024", "date": "05-Jan-2024 18:30"},
+    {"symbol": "ABCLTD", "company": "ABC Limited", "acqName": "Sita Kumar", "personCategory": "Promoter Group",
+     "secType": "Equity Shares", "secAcq": "5,000", "secVal": "1,300,000", "tdpTransactionType": "Buy",
+     "acqMode": "Market Purchase", "befAcqSharesPer": "3.00", "afterAcqSharesPer": "3.05",
+     "acqfromDt": "10-Jan-2024", "acqtoDt": "10-Jan-2024", "intimDt": "11-Jan-2024", "date": "12-Jan-2024 10:05"},
+    {"symbol": "XYZIND", "company": "XYZ Industries", "acqName": "Promoter Holdings Pvt Ltd", "personCategory": "Promoter Group",
+     "secType": "Equity Shares", "secAcq": "200000", "secVal": "40000000", "tdpTransactionType": "Sell",
+     "acqMode": "Market Sale", "befAcqSharesPer": "60.00", "afterAcqSharesPer": "59.20",
+     "acqfromDt": "15-Jan-2024", "acqtoDt": "16-Jan-2024", "intimDt": "17-Jan-2024", "date": "18-Jan-2024 20:00"},
+    {"symbol": "XYZIND", "company": "XYZ Industries", "acqName": "Promoter Holdings Pvt Ltd", "personCategory": "Promoter Group",
+     "secType": "Equity Shares", "secAcq": "500000", "secVal": "-", "tdpTransactionType": "Pledge",
+     "acqMode": "Pledge Creation", "befAcqSharesPer": "59.20", "afterAcqSharesPer": "59.20",
+     "acqfromDt": "20-Jan-2024", "acqtoDt": "20-Jan-2024", "intimDt": "21-Jan-2024", "date": "22-Jan-2024 11:00"},
+    {"symbol": "ABCLTD", "company": "ABC Limited", "acqName": "Anil Mehta", "personCategory": "Director",
+     "secType": "Equity Shares", "secAcq": "1000", "secVal": "250000", "tdpTransactionType": "Sell",
+     "acqMode": "Market Sale", "befAcqSharesPer": "0.10", "afterAcqSharesPer": "0.09",
+     "acqfromDt": "05-Jan-2024", "acqtoDt": "05-Jan-2024", "intimDt": "06-Jan-2024", "date": "08-Jan-2024 09:00"},
+    {"symbol": "ABCLTD", "company": "ABC Limited", "acqName": "Ravi Kumar", "personCategory": "Promoters",
+     "secType": "Equity Shares", "secAcq": "20000", "secVal": "0", "tdpTransactionType": "Sell",
+     "acqMode": "Off Market", "befAcqSharesPer": "45.20", "afterAcqSharesPer": "44.90",
+     "acqfromDt": "20-Feb-2024", "acqtoDt": "20-Feb-2024", "intimDt": "21-Feb-2024", "date": "22-Feb-2024 12:00"},
+    {"company": "No Symbol Ltd", "acqName": "Nobody", "personCategory": "Promoters"},
+    {"symbol": "NEWFMT", "companyName": "New Format Ltd", "acquirerName": "Asha Rao", "category": "Promoters",
+     "noOfSecurities": 100, "value": 25000.5, "transactionType": "Buy", "modeOfAcquisition": "Market Purchase",
+     "acqFromDt": "2024-01-02", "acqToDt": "2024-01-02", "broadcastDate": "03/01/2024"}
+  ]
+}
