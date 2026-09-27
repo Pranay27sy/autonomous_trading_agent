@@ -16,7 +16,7 @@ and what the share price did afterwards.
 ### Data (all free)
 | What | Source |
 |---|---|
-| Insider / promoter trades | NSE SEBI PIT disclosures (`/api/corporates-pit`, the JSON the NSE website uses) |
+| Insider / promoter trades | NSE SEBI PIT disclosures: `/api/corporates-pit` up to 2 May 2026, then `/api/corporates-pit-gg` plus each filing's XBRL file |
 | Daily prices | Yahoo Finance via `yfinance` (`SYMBOL.NS`, `^NSEI` benchmark) |
 
 Everything is cached in `data/promoter.db` (SQLite). Refreshes are incremental:
@@ -52,6 +52,8 @@ Environment variables: `PROMOTER_DB` (SQLite path), `PROMOTER_AUTO_REFRESH=0` (t
 ### Caveats
 - The NSE and Yahoo endpoints are unofficial and rate-limited, and they may change or block
   requests. If NSE renames JSON fields, update `FIELD_ALIASES` in `promoter_tracker/nse_client.py`.
+  If a refresh warns that NSE returned no disclosures for a couple of weeks, the feed has
+  probably moved again: check which endpoint NSE's insider-trading page now calls.
 - Disclosures can lag the actual trade by up to about 4 trading days.
 - Survivorship: delisted stocks have no Yahoo prices and are skipped.
 - For research only, not investment advice.

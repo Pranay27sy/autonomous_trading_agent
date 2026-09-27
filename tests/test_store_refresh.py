@@ -88,3 +88,30 @@ def test_refresh_all_reports_nse_failure(tmp_path):
     res = refresh.refresh_all(store, 30, client=Broken(), downloader=lambda t, s: pd.Series(dtype=float))
     assert res.errors and "blocked" in res.errors[0]
     assert store.get_meta("last_refresh") is None
+
+
+def test_refresh_all_warns_when_nse_goes_quiet(tmp_path):
+    store = Store(tmp_path / "t.db")
+    res = refresh.refresh_all(store, 30, client=FakeClient(),
+                              downloader=lambda t, s: pd.Series(dtype=float), today=date(2024, 6, 1))
+    assert not res.errors
+    assert res.warnings and "no disclosures after" in res.warnings[0]
+
+
+def test_refresh_all_reports_failed_filings(tmp_path):
+    class Partial(FakeClient):
+        failed_filings = ["a.xml", "b.xml"]
+
+    store = Store(tmp_path / "t.db")
+    res = refresh.refresh_all(store, 30, client=Partial(),
+                              downloader=lambda t, s: pd.Series(dtype=float), today=date(2024, 3, 1))
+    assert res.new_trades == 7
+    assert res.errors == ["NSE disclosures: 2 filings could not be downloaded"]
+
+
+def test_refresh_all_since_overrides_window(tmp_path):
+    store = Store(tmp_path / "t.db")
+    client = FakeClient()
+    refresh.refresh_all(store, 30, client=client, downloader=lambda t, s: pd.Series(dtype=float),
+                        today=date(2024, 3, 1), since=date(2023, 12, 1))
+    assert client.ranges[0] == (date(2023, 12, 1), date(2024, 3, 1))

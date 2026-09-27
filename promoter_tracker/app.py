@@ -50,6 +50,8 @@ def run_refresh(backfill_days: int) -> None:
                 st.error(e)
         else:
             status.update(label=f"Up to date: {msg}", state="complete")
+        for w in res.warnings:
+            st.warning(w)
     st.cache_data.clear()
 
 
