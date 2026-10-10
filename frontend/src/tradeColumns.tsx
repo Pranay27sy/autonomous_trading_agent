@@ -19,7 +19,20 @@ const returnColumn = (key: ReturnKey): Column<Trade> => {
 const all: Record<string, Column<Trade>> = {
   event_date: { key: "event_date", label: "Date", render: (t) => day(t.event_date) },
   symbol: { key: "symbol", label: "Symbol", render: (t) => <StockLink symbol={t.symbol} /> },
-  direction: { key: "direction", label: "Side", render: (t) => <SideChip side={t.direction} /> },
+  direction: {
+    key: "direction",
+    label: "Side",
+    render: (t) => (
+      <span style={{ display: "inline-flex", gap: 4 }}>
+        <SideChip side={t.direction} />
+        {t.internal_transfer && (
+          <span className="chip neutral" title="A promoter-group member trading with another on the same day">
+            transfer
+          </span>
+        )}
+      </span>
+    ),
+  },
   company: { key: "company", label: "Company", className: "clip", render: (t) => <span className="muted" title={t.company ?? ""}>{t.company}</span> },
   person: { key: "person", label: "Promoter", className: "clip", render: (t) => <span title={t.person ?? ""}>{t.person}</span> },
   mode: { key: "mode", label: "Mode", render: (t) => <span className="muted">{t.mode}</span> },

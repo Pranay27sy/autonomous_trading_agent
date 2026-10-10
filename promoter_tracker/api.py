@@ -131,10 +131,11 @@ def filters(
     min_value: Annotated[float, Query(ge=0, le=1e12)] = 1e6,
     market_only: bool = True,
     basis: Literal["disclosure_date", "trade_to"] = "disclosure_date",
+    include_transfers: bool = False,
 ) -> service.Filters:
     """The filter bar's query parameters, shared by the data endpoints."""
     return service.Filters(period, tuple(s for s in sides.split(",") if s), min_value,
-                           market_only, basis)
+                           market_only, basis, exclude_transfers=not include_transfers)
 
 
 # Module level so FastAPI can resolve it (annotations are strings here).
@@ -249,7 +250,8 @@ def create_app(settings: Settings | None = None,
         if events.empty or symbol not in set(events["symbol"]):
             raise HTTPException(404, f"No promoter trades for {symbol}")
         bars = request.app.state.store.load_bars(nse_ticker(symbol))
-        return service.stock(events, symbol, f.sides or ("buy", "sell"), bars)
+        return service.stock(events, symbol, f.sides or ("buy", "sell"), bars,
+                             f.exclude_transfers)
 
     def known_symbol(request: Request, symbol: str) -> str:
         symbol = symbol.upper()
@@ -265,6 +267,8 @@ def create_app(settings: Settings | None = None,
     def watchlist(request: Request, f: F) -> list[dict]:
         store: Store = request.app.state.store
         events, _ = events_for(request, f)
+        if f.exclude_transfers and not events.empty:
+            events = events[~events["internal_transfer"]]
         return service.watchlist(events, store.watchlist(), f.sides or ("buy", "sell"),
                                  lambda s: store.load_prices(nse_ticker(s)))
 

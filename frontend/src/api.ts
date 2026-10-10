@@ -20,6 +20,8 @@ export interface Trade {
   holding_change_pct: number | null;
   disclosure_date: string | null;
   trade_to: string | null;
+  /** One promoter-group member selling to another (see analysis.internal_transfers). */
+  internal_transfer: boolean;
   ret_1: number | null;
   ret_5: number | null;
   ret_20: number | null;

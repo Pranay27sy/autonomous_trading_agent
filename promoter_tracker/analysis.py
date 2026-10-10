@@ -5,6 +5,9 @@ import numpy as np
 import pandas as pd
 
 HORIZONS = (1, 5, 20, 60, 120)
+# A buy and a sell within this relative size of each other, same stock and day,
+# between two different promoter-group members, is treated as a transfer.
+TRANSFER_TOLERANCE = 0.03
 
 _EXCLUDED_MODES = ("off market", "gift", "esop", "esos", "inter-se", "inter se",
                    "pledge", "invocation", "revocation", "transmission", "bonus",
@@ -45,7 +48,8 @@ def promoter_events(trades: pd.DataFrame, market_only: bool = True,
     (when the promoter actually traded).
     """
     if trades.empty:
-        return trades.assign(direction=pd.Series(dtype=str), event_date=pd.Series(dtype="datetime64[ns]"))
+        return trades.assign(direction=pd.Series(dtype=str), event_date=pd.Series(dtype="datetime64[ns]"),
+                             internal_transfer=pd.Series(dtype=bool))
     df = trades[trades["category"].map(is_promoter)].copy()
     df["direction"] = [trade_direction(t, m) for t, m in zip(df["txn_type"], df["mode"], strict=True)]
     df = df[df["direction"].notna()]
@@ -63,7 +67,45 @@ def promoter_events(trades: pd.DataFrame, market_only: bool = True,
     df = df[df["event_date"].notna()]
     df["holding_change_pct"] = df["holding_after_pct"] - df["holding_before_pct"]
     df["signed_value"] = np.where(df["direction"] == "buy", 1, -1) * df["value"].fillna(0)
+    df["internal_transfer"] = internal_transfers(df)
     return df.sort_values("event_date", ascending=False).reset_index(drop=True)
+
+
+def _same_size(a, b, tol: float = TRANSFER_TOLERANCE) -> bool:
+    if a is None or b is None or pd.isna(a) or pd.isna(b) or not a or not b:
+        return False
+    return abs(a / b - 1) <= tol
+
+
+def internal_transfers(events: pd.DataFrame) -> pd.Series:
+    """True for buys and sells that are one promoter-group member selling to another.
+
+    Groups often move shares between family members or holding companies
+    through the exchange: one buys and another sells the same quantity on the
+    same day. That isn't a view on the price, and counting it as both a large
+    buy and a large sell distorts every statistic. Each sell pairs with at most
+    one buy.
+    """
+    flags = pd.Series(False, index=events.index)
+    if events.empty:
+        return flags
+    day = events["trade_to"].fillna(events["event_date"]) if "trade_to" in events         else events["event_date"]
+    keyed = events.assign(_day=day)
+    sides = keyed.groupby(["symbol", "_day"])["direction"].transform("nunique")
+    for _, g in keyed[sides > 1].groupby(["symbol", "_day"]):  # days with buys and sells
+        sells = g[g["direction"] == "sell"]
+        used: set = set()
+        for bi, b in g[g["direction"] == "buy"].iterrows():
+            for si, sl in sells.iterrows():
+                if si in used or b["person"] == sl["person"]:
+                    continue
+                if _same_size(b["quantity"], sl["quantity"]) or (
+                        (pd.isna(b["quantity"]) or pd.isna(sl["quantity"]))
+                        and _same_size(b["value"], sl["value"])):
+                    flags[bi] = flags[si] = True
+                    used.add(si)
+                    break
+    return flags
 
 
 def forward_returns(prices: pd.Series, event_date: pd.Timestamp,

@@ -159,9 +159,11 @@ def scan(store: Store) -> list[dict]:
     if new.empty:
         return []
     s = AlertSettings.load(store)
-    new_events = analysis.promoter_events(new, market_only=s.market_only)
-    all_events = analysis.promoter_events(store.load_trades(), market_only=s.market_only) \
-        if s.cluster_min_people and not new_events.empty else new_events
+    # Events across all trades, so a new buy can pair with its transfer partner
+    # (or join a cluster) even when the other side arrived earlier.
+    all_events = analysis.promoter_events(store.load_trades(), market_only=s.market_only)
+    all_events = all_events[~all_events["internal_transfer"]]
+    new_events = all_events[all_events["trade_key"].isin(set(new["trade_key"]))]
     watch = {w["symbol"] for w in store.watchlist()}
     added = store.add_alerts(evaluate(new_events, all_events, watch, s)) \
         if not new_events.empty else []

@@ -174,3 +174,10 @@ def test_trades_in_one_stock_are_grouped_and_clusters_cover_big_buys(store):
     assert new["XYZIND"]["detail"].startswith("S1, S2 ·")
     assert new["NEWCO"]["kind"] == "cluster"  # not three separate big-buy alerts
     assert len(new) == 2
+
+
+def test_internal_transfers_do_not_alert(store):
+    alerts.scan(store)
+    store.upsert_trades([trade("HoldCo", 9e8, symbol="BIGCO"),
+                         {**trade("Family Trust", 9e8, "Sell", symbol="BIGCO")}])
+    assert alerts.scan(store) == []

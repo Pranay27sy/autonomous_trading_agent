@@ -10,6 +10,12 @@ describe("filters", () => {
     expect(parseFilters(params)).toEqual(f);
   });
 
+  it("keeps showing group transfers in the URL", () => {
+    const f = { ...DEFAULT_FILTERS, includeTransfers: true };
+    expect(filtersToParams(f).toString()).toBe("transfers=show");
+    expect(parseFilters(filtersToParams(f))).toEqual(f);
+  });
+
   it("ignores junk in the URL", () => {
     const f = parseFilters(new URLSearchParams("period=2W&sides=hold,buy&min=-5&basis=x"));
     expect(f).toEqual({ ...DEFAULT_FILTERS, sides: ["buy"] });
@@ -17,7 +23,7 @@ describe("filters", () => {
 
   it("uses the API's parameter names for requests", () => {
     expect(filtersToParams(DEFAULT_FILTERS, true).toString()).toBe(
-      "period=1Y&sides=buy%2Csell&min_value=1000000&market_only=true&basis=disclosure_date",
+      "period=1Y&sides=buy%2Csell&min_value=1000000&market_only=true&basis=disclosure_date&include_transfers=false",
     );
   });
 });

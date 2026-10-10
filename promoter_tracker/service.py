@@ -26,7 +26,7 @@ _BAR_FIELDS = ("open", "high", "low", "close", "volume")
 # Columns sent for each trade row; returns are fractions (0.05 = +5%).
 TRADE_FIELDS = ["event_date", "symbol", "company", "person", "category", "direction", "mode",
                 "quantity", "value", "holding_before_pct", "holding_after_pct",
-                "holding_change_pct", "disclosure_date", "trade_to",
+                "holding_change_pct", "disclosure_date", "trade_to", "internal_transfer",
                 *[f"ret_{h}" for h in analysis.HORIZONS], *[f"exc_{h}" for h in analysis.HORIZONS]]
 
 
@@ -37,6 +37,8 @@ class Filters:
     min_value: float = 1e6
     market_only: bool = True
     basis: str = "disclosure_date"
+    # Leave out promoter-group members trading with each other (analysis.internal_transfers).
+    exclude_transfers: bool = True
 
 
 class EventCache:
@@ -77,6 +79,8 @@ def filter_events(events: pd.DataFrame, f: Filters) -> pd.DataFrame:
     if events.empty:
         return events
     keep = events["direction"].isin(f.sides) & (events["value"].fillna(0) >= f.min_value)
+    if f.exclude_transfers:
+        keep &= ~events["internal_transfer"]
     days = PERIODS[f.period]
     if days is not None:
         keep &= events["event_date"] >= events["event_date"].max() - pd.Timedelta(days=days)
@@ -177,10 +181,13 @@ def stock_list(events: pd.DataFrame, view: pd.DataFrame) -> list[dict]:
     return sorted(out, key=lambda r: (-r["trades"], r["symbol"]))
 
 
-def stock(events: pd.DataFrame, symbol: str, sides: tuple[str, ...], bars: pd.DataFrame) -> dict:
+def stock(events: pd.DataFrame, symbol: str, sides: tuple[str, ...], bars: pd.DataFrame,
+          exclude_transfers: bool = True) -> dict:
     """bars: daily open/high/low/close/volume (Store.load_bars)."""
     prices = bars["close"]
     sev = events[(events["symbol"] == symbol) & events["direction"].isin(sides)]
+    if exclude_transfers:
+        sev = sev[~sev["internal_transfer"]]
     buys = sev[sev["direction"] == "buy"]
     after = buys["exc_60"].dropna() if "exc_60" in buys else pd.Series(dtype=float)
     hold = sev.dropna(subset=["holding_after_pct"]).sort_values("event_date")

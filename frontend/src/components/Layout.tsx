@@ -98,6 +98,12 @@ function FilterBar() {
         />
       </div>
       <Switch
+        label="Hide group transfers"
+        checked={!f.includeTransfers}
+        onChange={(hide) => update({ includeTransfers: !hide })}
+        title="Hide promoter-group members buying from and selling to each other on the same day: not a view on the price"
+      />
+      <Switch
         label="Open-market only"
         checked={f.marketOnly}
         onChange={(marketOnly) => update({ marketOnly })}
