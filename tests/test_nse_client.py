@@ -2,6 +2,8 @@ import json
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from promoter_tracker import nse_client
 from promoter_tracker.nse_client import date_chunks, parse_date, parse_number, parse_response
 
@@ -182,3 +184,32 @@ def test_archive_403_pauses_all_workers_then_retries(monkeypatch):
     assert client._get_bytes("f.xml") == b"<xml/>"
     assert max(sleeps) > nse_client.ARCHIVE_COOLDOWN - 5  # waited out the cooldown
     assert client._blocked_until > 0
+
+
+def test_old_filing_that_404s_is_skipped_not_retried(monkeypatch):
+    def gone(self, url):
+        raise nse_client.FilingMissing(f"{url}: 404 Not Found")
+
+    monkeypatch.setattr(nse_client.NSEClient, "_get_bytes", gone)
+    client = nse_client.NSEClient()
+    old = {"symbol": "A", "appId": "1", "xmlFileName": "a.xml",
+           "broadcastDateTime": "09-Jun-2020 18:00:01"}
+    fresh = {"symbol": "B", "appId": "2", "xmlFileName": "b.xml",
+             "broadcastDateTime": date.today().strftime("%d-%b-%Y 18:00:01")}
+    assert client.retry_filings([old, fresh]) == []
+    assert client.missing_filings == [old]  # NSE removed it
+    assert client.failed_filings == [fresh]  # may just not be uploaded yet
+
+
+def test_archive_404_is_not_retried(monkeypatch):
+    calls = []
+
+    class Resp:
+        status_code, content = 404, b""
+
+    client = nse_client.NSEClient()
+    monkeypatch.setattr(client._worker_session(), "get",
+                        lambda url, timeout: calls.append(url) or Resp())
+    with pytest.raises(nse_client.FilingMissing):
+        client._get_bytes("gone.xml")
+    assert len(calls) == 1

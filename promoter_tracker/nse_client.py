@@ -14,12 +14,12 @@ from __future__ import annotations
 import logging
 import threading
 import time
-import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Iterable
 
 import requests
+from defusedxml import ElementTree as ET
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +42,13 @@ HEADERS = {
     "Referer": f"{BASE_URL}/companies-listing/corporate-filings-insider-trading",
 }
 CHUNK_DAYS = 30
+# A filing's file can 404 for a short while after it is broadcast. Once it is
+# older than this, a 404 means NSE removed it and retrying is pointless.
+MISSING_GRACE_DAYS = 2
+
+
+class FilingMissing(RuntimeError):
+    """NSE's archive answered 404 for a filing's file."""
 
 # Canonical column -> NSE field names seen for it. NSE has renamed fields
 # before; if a refresh starts returning blanks, add the new name here.
@@ -176,7 +183,8 @@ def parse_xbrl(xml: str | bytes, disclosure_date: str | None = None) -> list[dic
     """Parse one PIT XBRL filing (one trade per disclosure context).
 
     Pass the raw bytes when you have them so the parser honours the file's own
-    encoding declaration.
+    encoding declaration. The file comes off the network, so it is parsed with
+    defusedxml, which rejects entity-expansion and external-entity tricks.
     """
     root = ET.fromstring(xml.encode("utf-8") if isinstance(xml, str) else xml)
     contexts: dict[str, dict[str, str]] = {}
@@ -251,6 +259,8 @@ class NSEClient:
         # Listing entries whose XBRL file could not be downloaded in the last
         # fetch_pit / retry_filings call; pass them to retry_filings later.
         self.failed_filings: list[dict] = []
+        # Entries whose file NSE no longer has (404 well after broadcast); not retried.
+        self.missing_filings: list[dict] = []
         self._lock = threading.Lock()
         self._blocked_until = 0.0
         # requests.Session isn't thread-safe, so each download worker gets its own.
@@ -299,6 +309,8 @@ class NSEClient:
                 time.sleep(wait)
             try:
                 resp = self._worker_session().get(url, timeout=self.timeout)
+                if resp.status_code == 404:
+                    raise FilingMissing(f"{url}: 404 Not Found")
                 if resp.status_code == 403:
                     with self._lock:
                         until = time.monotonic() + ARCHIVE_COOLDOWN * attempt
@@ -321,6 +333,7 @@ class NSEClient:
         caller can save progress before a later chunk fails.
         """
         self.failed_filings = []
+        self.missing_filings = []
         sink = _Sink(on_chunk)
         if start <= LEGACY_LAST_DAY:
             self._fetch_legacy(start, min(end, LEGACY_LAST_DAY), symbol, sink)
@@ -332,6 +345,7 @@ class NSEClient:
     def retry_filings(self, filings: list[dict]) -> list[dict]:
         """Download listing entries that failed before (from failed_filings)."""
         self.failed_filings = []
+        self.missing_filings = []
         return self._download(filings)
 
     def _params(self, chunk_start: date, chunk_end: date, symbol: str | None) -> dict:
@@ -371,8 +385,16 @@ class NSEClient:
 
     def _fetch_filing(self, filing: dict) -> list[dict]:
         url = filing["xmlFileName"]
+        broadcast = parse_date(filing.get("broadcastDateTime"))
         try:
-            trades = parse_xbrl(self._get_bytes(url), parse_date(filing.get("broadcastDateTime")))
+            trades = parse_xbrl(self._get_bytes(url), broadcast)
+        except FilingMissing as err:
+            old = broadcast and date.fromisoformat(broadcast) < date.today() - timedelta(
+                days=MISSING_GRACE_DAYS)
+            log.warning("Filing %s %s: %s", filing.get("symbol"), filing.get("appId"), err)
+            with self._lock:
+                (self.missing_filings if old else self.failed_filings).append(filing)
+            return []
         except Exception as err:  # one bad filing must not abort the whole download
             log.warning("Skipping filing %s: %s", url, err)
             with self._lock:

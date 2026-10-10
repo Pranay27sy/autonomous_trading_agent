@@ -47,7 +47,7 @@ def promoter_events(trades: pd.DataFrame, market_only: bool = True,
     if trades.empty:
         return trades.assign(direction=pd.Series(dtype=str), event_date=pd.Series(dtype="datetime64[ns]"))
     df = trades[trades["category"].map(is_promoter)].copy()
-    df["direction"] = [trade_direction(t, m) for t, m in zip(df["txn_type"], df["mode"])]
+    df["direction"] = [trade_direction(t, m) for t, m in zip(df["txn_type"], df["mode"], strict=True)]
     df = df[df["direction"].notna()]
     if market_only:
         df = df[df["mode"].map(is_market_trade)]
@@ -96,7 +96,7 @@ def event_returns(events: pd.DataFrame, price_lookup, benchmark: pd.Series | Non
     cache: dict[str, pd.Series] = {}
     ret_rows, exc_rows = [], []
     valid = events["returns_valid"] if "returns_valid" in events else [True] * len(events)
-    for sym, when, ok in zip(events["symbol"], events["event_date"], valid):
+    for sym, when, ok in zip(events["symbol"], events["event_date"], valid, strict=True):
         if not ok:
             ret_rows.append({h: np.nan for h in horizons})
             exc_rows.append({h: np.nan for h in horizons})

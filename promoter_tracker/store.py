@@ -10,7 +10,14 @@ from pathlib import Path
 
 import pandas as pd
 
-DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "promoter.db"
+from .config import DEFAULT_DB
+
+# How long a write waits for another process (the scheduled refresh vs the app)
+# to release the database before failing with "database is locked".
+BUSY_TIMEOUT_S = 30
+
+# Daily bar columns besides close; NULL for bars cached before candles were stored.
+OHLC_EXTRA = ("open", "high", "low", "volume")
 
 TRADE_COLUMNS = [
     "symbol", "company", "person", "category", "security_type", "quantity", "value",
@@ -40,6 +47,10 @@ CREATE TABLE IF NOT EXISTS prices (
     ticker TEXT NOT NULL,
     date TEXT NOT NULL,
     close REAL NOT NULL,
+    open REAL,
+    high REAL,
+    low REAL,
+    volume REAL,
     PRIMARY KEY (ticker, date)
 );
 CREATE TABLE IF NOT EXISTS meta (
@@ -51,17 +62,25 @@ CREATE TABLE IF NOT EXISTS meta (
 
 def trade_key(trade: dict) -> str:
     raw = "|".join(str(trade.get(f) or "") for f in _KEY_FIELDS)
-    return hashlib.sha1(raw.encode()).hexdigest()
+    # A dedup key, not a security boundary; changing the hash would orphan stored rows.
+    return hashlib.sha1(raw.encode(), usedforsecurity=False).hexdigest()
 
 
 class Store:
-    """One SQLite connection shared by the app's sessions; every call holds a lock."""
+    """One SQLite connection shared by the app's sessions; every call holds a lock.
+
+    The app and the scheduled refresh are separate processes writing the same
+    file, so the database runs in WAL mode (readers never block the writer) and
+    writes wait out the other process instead of failing straight away.
+    """
 
     def __init__(self, path: Path | str = DEFAULT_DB):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=BUSY_TIMEOUT_S)
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")  # durable enough with WAL, much faster
         self.conn.executescript(SCHEMA)
         self._migrate()
 
@@ -72,6 +91,10 @@ class Store:
             if col not in have:
                 self.conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {_COLUMN_TYPES.get(col, 'TEXT')}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_filing ON trades(filing_id)")
+        have = {row[1] for row in self.conn.execute("PRAGMA table_info(prices)")}
+        for col in OHLC_EXTRA:
+            if col not in have:
+                self.conn.execute(f"ALTER TABLE prices ADD COLUMN {col} REAL")
         self.conn.commit()
 
     def close(self) -> None:
@@ -86,7 +109,7 @@ class Store:
         filing's rows and keeps that original from being inserted again later.
         """
         replaced = sorted({t["replaces"] for t in trades if t.get("replaces")})
-        with self._lock:
+        with self._lock, self.conn:  # one transaction: all or nothing
             if replaced:
                 self.conn.executemany("INSERT OR IGNORE INTO superseded_filings VALUES (?)",
                                       [(r,) for r in replaced])
@@ -98,14 +121,13 @@ class Store:
             before = self._count_trades()
             # Rows stored before filing_id existed pick it up when re-fetched.
             self.conn.executemany(
-                f"INSERT INTO trades (trade_key, {', '.join(TRADE_COLUMNS)}) "
+                f"INSERT INTO trades (trade_key, {', '.join(TRADE_COLUMNS)}) "  # noqa: S608 (constant column names)
                 f"VALUES ({', '.join('?' * (len(TRADE_COLUMNS) + 1))}) "
                 "ON CONFLICT(trade_key) DO UPDATE SET "
                 "filing_id = COALESCE(trades.filing_id, excluded.filing_id)",
                 rows,
             )
             added = self._count_trades() - before
-            self.conn.commit()
         return added
 
     def _count_trades(self) -> int:
@@ -119,7 +141,7 @@ class Store:
         for i in range(0, len(ids), 500):  # stay under SQLite's variable limit
             part = ids[i:i + 500]
             found.update(r[0] for r in self.conn.execute(
-                f"SELECT filing_id FROM superseded_filings WHERE filing_id IN "
+                f"SELECT filing_id FROM superseded_filings WHERE filing_id IN "  # noqa: S608 (placeholders only)
                 f"({', '.join('?' * len(part))})", part))
         return found
 
@@ -141,13 +163,25 @@ class Store:
         return row[0] if row else None
 
     # --- prices -----------------------------------------------------------
-    def upsert_prices(self, ticker: str, closes: pd.Series) -> int:
-        rows = [(ticker, pd.Timestamp(d).date().isoformat(), float(v))
-                for d, v in closes.dropna().items()]
-        with self._lock:
+    def upsert_prices(self, ticker: str, bars: pd.Series | pd.DataFrame,
+                      replace: bool = False) -> int:
+        """Store daily bars: a DataFrame with close (+ open/high/low/volume), or closes alone.
+
+        replace=True swaps out the ticker's whole history, so bars on dates the new
+        download no longer has (e.g. old holiday bars) don't linger.
+        """
+        df = bars.to_frame("close") if isinstance(bars, pd.Series) else bars
+        df = df.dropna(subset=["close"])
+        rows = [(ticker, pd.Timestamp(d).date().isoformat(), float(r["close"]),
+                 *(_num(r.get(c)) for c in OHLC_EXTRA))
+                for d, r in df.iterrows()]
+        with self._lock, self.conn:
+            if replace:
+                self.conn.execute("DELETE FROM prices WHERE ticker = ?", (ticker,))
             before = self.conn.total_changes
-            self.conn.executemany("INSERT OR REPLACE INTO prices VALUES (?, ?, ?)", rows)
-            self.conn.commit()
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO prices (ticker, date, close, open, high, low, volume) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
             return self.conn.total_changes - before
 
     def load_prices(self, ticker: str) -> pd.Series:
@@ -158,6 +192,22 @@ class Store:
             )
         return pd.Series(df["close"].to_numpy(), index=pd.to_datetime(df["date"]), name=ticker)
 
+    def load_bars(self, ticker: str) -> pd.DataFrame:
+        """Daily open/high/low/close/volume indexed by date (OHLC may be NaN on old rows)."""
+        with self._lock:
+            df = pd.read_sql_query(
+                "SELECT date, open, high, low, close, volume FROM prices WHERE ticker = ? "
+                "ORDER BY date", self.conn, params=(ticker,))
+        return df.set_index(pd.to_datetime(df.pop("date")))
+
+    def missing_ohlc(self, ticker: str) -> bool:
+        """True if some cached bars only have a close (cached before candles were stored)."""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT EXISTS (SELECT 1 FROM prices WHERE ticker = ? AND open IS NULL)",
+                (ticker,)).fetchone()
+        return bool(row[0])
+
     def last_price_date(self, ticker: str) -> str | None:
         with self._lock:
             row = self.conn.execute(
@@ -167,9 +217,8 @@ class Store:
 
     # --- meta -------------------------------------------------------------
     def set_meta(self, key: str, value: str) -> None:
-        with self._lock:
+        with self._lock, self.conn:
             self.conn.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, value))
-            self.conn.commit()
 
     def get_meta(self, key: str) -> str | None:
         with self._lock:
@@ -189,6 +238,10 @@ class Store:
     def set_failed_filings(self, filings: list[dict]) -> None:
         unique = {f["xmlFileName"]: f for f in filings}
         self.set_meta("failed_filings", json.dumps(list(unique.values())))
+
+
+def _num(value) -> float | None:
+    return None if value is None or pd.isna(value) else float(value)
 
 
 def _now() -> str:
