@@ -22,6 +22,11 @@ export interface Trade {
   trade_to: string | null;
   /** One promoter-group member selling to another (see analysis.internal_transfers). */
   internal_transfer: boolean;
+  sector: string | null;
+  cap_bucket: string | null;
+  /** 0–100 for buys (see conviction.py); null for sells and transfers. */
+  conviction: number | null;
+  conviction_reasons: string[];
   ret_1: number | null;
   ret_5: number | null;
   ret_20: number | null;
@@ -86,6 +91,7 @@ export interface Overview {
   clusters: Cluster[];
   top_buyers: Leader[];
   top_sellers: Leader[];
+  top_conviction: Trade[];
 }
 
 export interface StockListItem {
@@ -107,6 +113,10 @@ export interface Bar {
 export interface StockDetail {
   symbol: string;
   company: string | null;
+  sector: string | null;
+  industry: string | null;
+  market_cap: number | null;
+  cap_bucket: string | null;
   kpis: {
     last_close: number | null;
     last_date: string | null;
@@ -158,7 +168,7 @@ export interface WatchItem {
   change_1m: number | null;
 }
 
-export type AlertKind = "watchlist" | "big_buy" | "big_sell" | "cluster";
+export type AlertKind = "watchlist" | "conviction" | "big_buy" | "big_sell" | "cluster";
 
 export interface Alert {
   id: number;
@@ -183,6 +193,7 @@ export interface AlertRules {
   cluster_min_people: number | null;
   cluster_window_days: number;
   market_only: boolean;
+  min_conviction: number | null;
 }
 
 export interface AlertSettings {

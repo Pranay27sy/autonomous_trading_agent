@@ -1,9 +1,9 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { api, type Leader, type Overview as OverviewData, type SummaryRow } from "../api";
+import { api, type Leader, type Overview as OverviewData, type SummaryRow, type Trade } from "../api";
 import { COLORS, ExcessChart, Sparkbars } from "../components/charts";
 import { DataTable, type Column } from "../components/DataTable";
-import { Card, Empty, ErrorBox, Skeleton, StockLink } from "../components/ui";
+import { Card, ConvictionBadge, Empty, ErrorBox, Skeleton, StockLink } from "../components/ui";
 import { useFilters } from "../filters";
 import { day, inr, integer, pct } from "../format";
 
@@ -80,6 +80,7 @@ export function Overview() {
           )}
         </Card>
       </div>
+      {d.top_conviction.length > 0 && <TopConviction rows={d.top_conviction} />}
       <div className="grid halves">
         <Leaders title="Top net buying" rows={d.top_buyers} color={COLORS.buy} />
         <Leaders title="Top net selling" rows={d.top_sellers} color={COLORS.sell} />
@@ -182,6 +183,32 @@ function Leaders({ title, rows, color }: { title: string; rows: Leader[]; color:
   return (
     <Card title={title}>
       {rows.length === 0 ? <p className="muted">None for these filters.</p> : <DataTable rows={rows} columns={columns} rowKey={(r) => r.symbol} />}
+    </Card>
+  );
+}
+
+function TopConviction({ rows }: { rows: Trade[] }) {
+  return (
+    <Card
+      title="Top conviction buys"
+      className="spaced"
+      actions={<span className="muted" style={{ fontSize: 12 }}>Higher scores have beaten Nifty more often</span>}
+    >
+      <ul className="conviction-list">
+        {rows.map((t, i) => (
+          <li key={`${t.symbol}-${t.event_date}-${i}`}>
+            <ConvictionBadge score={t.conviction} reasons={t.conviction_reasons} />
+            <StockLink symbol={t.symbol} />
+            <span className="mono">{inr(t.value)}</span>
+            <span className="muted clip-text" title={t.conviction_reasons.join(" · ")}>
+              {t.person} · {t.conviction_reasons.slice(0, 2).join(" · ")}
+            </span>
+            <span className="faint mono" style={{ marginLeft: "auto" }}>
+              {day(t.event_date, true)}
+            </span>
+          </li>
+        ))}
+      </ul>
     </Card>
   );
 }

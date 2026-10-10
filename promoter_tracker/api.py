@@ -45,6 +45,7 @@ class AlertSettingsBody(BaseModel):
     cluster_min_people: int | None = Field(default=3, ge=2, le=10)
     cluster_window_days: int = Field(default=30, ge=1, le=365)
     market_only: bool = True
+    min_conviction: int | None = Field(default=None, ge=0, le=100)
 
 
 class MarkRead(BaseModel):

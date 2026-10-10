@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from . import analysis, companies
+from . import analysis, companies, conviction
 from .prices import BENCHMARK, nse_ticker
 from .store import Store
 
@@ -27,7 +27,7 @@ _BAR_FIELDS = ("open", "high", "low", "close", "volume")
 TRADE_FIELDS = ["event_date", "symbol", "company", "person", "category", "direction", "mode",
                 "quantity", "value", "holding_before_pct", "holding_after_pct",
                 "holding_change_pct", "disclosure_date", "trade_to", "internal_transfer",
-                "sector", "cap_bucket",
+                "sector", "cap_bucket", "conviction", "conviction_reasons",
                 *[f"ret_{h}" for h in analysis.HORIZONS], *[f"exc_{h}" for h in analysis.HORIZONS]]
 
 
@@ -71,6 +71,9 @@ class EventCache:
                     events, lambda s: self.store.load_prices(nse_ticker(s)),
                     self.store.load_prices(BENCHMARK))
             events = companies.with_company_info(events, self.store.company_info())
+            if not events.empty:
+                events = conviction.add_conviction(
+                    events, lambda s: self.store.load_bars(nse_ticker(s)))
             self._cache[key] = events
             while len(self._cache) > self.max_entries:
                 self._cache.popitem(last=False)
@@ -92,7 +95,7 @@ def filter_events(events: pd.DataFrame, f: Filters) -> pd.DataFrame:
 # --- JSON helpers -------------------------------------------------------------
 def clean(value: Any) -> Any:
     """Make a value JSON-safe: NaN/NaT -> None, numpy -> Python, dates -> ISO."""
-    if value is None or value is pd.NaT:
+    if value is None or value is pd.NaT or value is pd.NA:
         return None
     if isinstance(value, (pd.Timestamp, datetime, date)):
         return value.date().isoformat() if isinstance(value, (pd.Timestamp, datetime)) \
@@ -160,7 +163,16 @@ def overview(view: pd.DataFrame, f: Filters, min_people: int = 2, window_days: i
                               ["symbol", "company", "net_value", "buys", "sells"]),
         "top_sellers": records(lb[lb["net_value"] < 0].tail(10).iloc[::-1],
                                ["symbol", "company", "net_value", "buys", "sells"]),
+        "top_conviction": records(top_conviction(view), TRADE_FIELDS),
     }
+
+
+def top_conviction(view: pd.DataFrame, n: int = 8) -> pd.DataFrame:
+    """The highest-conviction buys in the view, newest first among equals."""
+    if view.empty or "conviction" not in view:
+        return view.head(0)
+    buys = view[view["conviction"].notna()]
+    return buys.sort_values(["conviction", "event_date"], ascending=False).head(n)
 
 
 def trades(view: pd.DataFrame, query: str | None = None) -> dict:

@@ -111,6 +111,24 @@ function RulesCard() {
           checked={rules.watchlist_trades}
           onChange={(v) => set({ watchlist_trades: v })}
         />
+        <div className="rule">
+          <Switch
+            label="High-conviction buy in any stock, score at least"
+            checked={rules.min_conviction != null}
+            onChange={(v) => set({ min_conviction: v ? 60 : null })}
+          />
+          {rules.min_conviction != null && (
+            <input
+              className="input num-input"
+              type="number"
+              min={0}
+              max={100}
+              aria-label="Minimum conviction score"
+              value={rules.min_conviction}
+              onChange={(e) => set({ min_conviction: Math.min(100, Math.max(0, Number(e.target.value) || 0)) })}
+            />
+          )}
+        </div>
         <Threshold
           label="Large buy in any stock, at least"
           value={rules.big_buy_value}

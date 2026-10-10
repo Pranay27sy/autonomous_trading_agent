@@ -30,6 +30,21 @@ export function Switch(props: { label: string; checked: boolean; onChange: (v: b
   );
 }
 
+/** Conviction score with a bar; the reasons show on hover. */
+export function ConvictionBadge({ score, reasons }: { score: number | null; reasons?: string[] }) {
+  if (score == null) return <span className="faint">–</span>;
+  const tier = score >= 60 ? "hi" : score >= 35 ? "mid" : "lo";
+  const why = reasons?.length ? `Conviction ${score}/100:\n• ${reasons.join("\n• ")}` : `Conviction ${score}/100`;
+  return (
+    <span className={`conviction ${tier}`} title={why} aria-label={why}>
+      <span className="conviction-bar">
+        <span style={{ width: `${score}%` }} />
+      </span>
+      <span className="mono">{score}</span>
+    </span>
+  );
+}
+
 export function SideChip({ side }: { side: Side }) {
   return <span className={`chip ${side}`}>{side}</span>;
 }

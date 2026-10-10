@@ -18,7 +18,8 @@ from dataclasses import asdict, dataclass, fields
 
 import pandas as pd
 
-from . import analysis
+from . import analysis, conviction
+from .prices import nse_ticker
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ class AlertSettings:
     cluster_min_people: int | None = 3     # distinct promoters; None turns it off
     cluster_window_days: int = 30
     market_only: bool = True               # ignore gifts, pledges, ESOPs, ...
+    min_conviction: int | None = None      # high-conviction buy in any stock; None = off
 
     @classmethod
     def load(cls, store: Store) -> AlertSettings:
@@ -64,14 +66,18 @@ def _trade_alert(kind: str, group: pd.DataFrame) -> dict:
     side = "buy" if e["direction"] == "buy" else "sell"
     n = len(group)
     total = group["value"].fillna(0).sum()
-    noun = {"watchlist": f"promoter {side.upper()}",
+    noun = {"watchlist": f"promoter {side.upper()}", "conviction": "high-conviction buy",
             "big_buy": "large promoter buy", "big_sell": "large promoter sell"}[kind]
     if n == 1:
         hold = ""
         if pd.notna(e.get("holding_before_pct")) and pd.notna(e.get("holding_after_pct")):
             hold = f" · holding {e['holding_before_pct']:.2f}% → {e['holding_after_pct']:.2f}%"
         title = f"{e['symbol']}: {noun} {inr(e.get('value'))}"
-        detail = (f"{e.get('person') or 'Promoter'} · {e.get('mode') or ''}{hold} · "
+        if kind == "conviction":
+            title += f" (score {int(e['conviction'])})"
+        why = e.get("conviction_reasons")
+        why = f" · {'; '.join(why[:3])}" if kind == "conviction" and isinstance(why, list) and why else ""
+        detail = (f"{e.get('person') or 'Promoter'} · {e.get('mode') or ''}{hold}{why} · "
                   f"disclosed {_day(e.get('disclosure_date'))}")
         key = e["trade_key"]
     else:
@@ -107,6 +113,9 @@ def evaluate(new_events: pd.DataFrame, all_events: pd.DataFrame, watchlist: set[
         value = e.get("value") or 0
         if s.watchlist_trades and e["symbol"] in watchlist:
             return "watchlist"
+        if (e["direction"] == "buy" and s.min_conviction is not None
+                and pd.notna(e.get("conviction")) and e["conviction"] >= s.min_conviction):
+            return "conviction"
         if e["direction"] == "buy" and s.big_buy_value is not None and value >= s.big_buy_value:
             return "big_buy"
         if e["direction"] == "sell" and s.big_sell_value is not None and value >= s.big_sell_value:
@@ -163,6 +172,9 @@ def scan(store: Store) -> list[dict]:
     # (or join a cluster) even when the other side arrived earlier.
     all_events = analysis.promoter_events(store.load_trades(), market_only=s.market_only)
     all_events = all_events[~all_events["internal_transfer"]]
+    if s.min_conviction is not None and not all_events.empty:
+        all_events = conviction.add_conviction(all_events,
+                                               lambda sym: store.load_bars(nse_ticker(sym)))
     new_events = all_events[all_events["trade_key"].isin(set(new["trade_key"]))]
     watch = {w["symbol"] for w in store.watchlist()}
     added = store.add_alerts(evaluate(new_events, all_events, watch, s)) \

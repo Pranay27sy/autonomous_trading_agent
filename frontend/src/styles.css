@@ -239,3 +239,20 @@ tbody tr:last-child td { border-bottom: 0; }
 .num-input { width: 84px; font-family: var(--mono); text-align: right; }
 .channels { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
 code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); padding: 1px 5px; border-radius: 3px; }
+
+/* --- conviction ------------------------------------------------------------------ */
+.conviction { display: inline-flex; align-items: center; gap: 6px; cursor: help; }
+.conviction-bar { width: 44px; height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+.conviction-bar span { display: block; height: 100%; border-radius: 3px; }
+.conviction.lo .conviction-bar span { background: var(--faint); }
+.conviction.mid .conviction-bar span { background: var(--accent); }
+.conviction.hi .conviction-bar span { background: var(--buy); }
+.conviction.hi .mono { color: var(--buy); font-weight: 600; }
+.conviction-list { list-style: none; margin: 0; padding: 0; }
+.conviction-list li {
+  display: flex; align-items: center; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--line);
+  font-size: 13px; min-width: 0;
+}
+.conviction-list li:last-child { border-bottom: 0; }
+.clip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.card.spaced { margin-bottom: 16px; }

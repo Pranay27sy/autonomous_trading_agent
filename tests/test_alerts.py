@@ -181,3 +181,13 @@ def test_internal_transfers_do_not_alert(store):
     store.upsert_trades([trade("HoldCo", 9e8, symbol="BIGCO"),
                          {**trade("Family Trust", 9e8, "Sell", symbol="BIGCO")}])
     assert alerts.scan(store) == []
+
+
+def test_high_conviction_rule(store):
+    alerts.scan(store)
+    AlertSettings(big_buy_value=None, cluster_min_people=None, min_conviction=30).save(store)
+    store.upsert_trades([{**trade("Founder", 4e8, symbol="NEWCO"), "holding_before_pct": 10.0,
+                          "holding_after_pct": 11.5}])
+    [a] = alerts.scan(store)
+    assert a["kind"] == "conviction" and "(score " in a["title"]
+    assert "raised their stake by 1.50% of the company" in a["detail"]

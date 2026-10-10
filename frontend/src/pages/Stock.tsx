@@ -77,6 +77,13 @@ function StockView({ symbol, stocks }: { symbol: string; stocks: StockListItem[]
             <span className="muted mono">NSE: {symbol}</span>
             <WatchButton symbol={symbol} />
           </div>
+          {(q.data.sector || q.data.cap_bucket) && (
+            <p className="muted" style={{ margin: "-8px 0 16px", fontSize: 13 }}>
+              {[q.data.sector, q.data.industry, q.data.cap_bucket, q.data.market_cap ? `mcap ${inr(q.data.market_cap)}` : null]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
+          )}
           <Kpis d={q.data} />
           <Card
             title={<span className="legend"><span className="tri-up">▲ promoter buy</span><span className="tri-down">▼ promoter sell</span><span>size = ₹ value</span></span>}
@@ -113,7 +120,7 @@ function StockView({ symbol, stocks }: { symbol: string; stocks: StockListItem[]
                 rows={q.data.trades}
                 rowKey={(t, i) => `${t.event_date}-${t.person}-${i}`}
                 columns={tradeColumns([
-                  "event_date", "direction", "person", "mode", "value", "holding_after_pct", "holding_change_pct",
+                  "event_date", "direction", "person", "mode", "value", "conviction", "holding_after_pct", "holding_change_pct",
                   "ret_1", "ret_5", "ret_20", "ret_60", "ret_120", "exc_20", "exc_60", "exc_120",
                 ])}
               />

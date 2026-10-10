@@ -1,6 +1,6 @@
 import type { Trade } from "./api";
 import type { Column } from "./components/DataTable";
-import { SideChip, StockLink } from "./components/ui";
+import { ConvictionBadge, SideChip, StockLink } from "./components/ui";
 import { day, inr, integer, pct, percentPoints, signClass } from "./format";
 
 type ReturnKey = `ret_${1 | 5 | 20 | 60 | 120}` | `exc_${1 | 5 | 20 | 60 | 120}`;
@@ -37,6 +37,13 @@ const all: Record<string, Column<Trade>> = {
   person: { key: "person", label: "Promoter", className: "clip", render: (t) => <span title={t.person ?? ""}>{t.person}</span> },
   mode: { key: "mode", label: "Mode", render: (t) => <span className="muted">{t.mode}</span> },
   value: { key: "value", label: "Value", align: "right", render: (t) => inr(t.value) },
+  conviction: {
+    key: "conviction",
+    label: "Conviction",
+    title:
+      "0–100 score for promoter buys: stake bought, size vs trading volume, other promoters buying, price dip, repeat buying. Hover a score for its reasons.",
+    render: (t) => <ConvictionBadge score={t.conviction} reasons={t.conviction_reasons} />,
+  },
   quantity: { key: "quantity", label: "Shares", align: "right", render: (t) => integer(t.quantity) },
   holding_after_pct: {
     key: "holding_after_pct",
