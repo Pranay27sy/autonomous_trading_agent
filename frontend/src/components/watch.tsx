@@ -113,4 +113,5 @@ export const KIND_LABEL = {
   big_sell: "big sell",
   cluster: "cluster",
   pledge: "pledge",
+  screen: "screen",
 } as const;

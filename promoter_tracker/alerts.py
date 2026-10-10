@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, fields
 
 import pandas as pd
 
-from . import analysis, conviction, pledges
+from . import analysis, companies, conviction, pledges, screener
 from .prices import nse_ticker
 from .store import Store
 
@@ -184,6 +184,44 @@ def pledge_alerts(new_trades: pd.DataFrame, watchlist: set[str], s: AlertSetting
     return out
 
 
+def screen_alerts(store: Store, events: pd.DataFrame) -> list[dict]:
+    """Stocks that newly match a saved screen with alerts on.
+
+    Each screen remembers its matches; a stock alerts when it enters, and again
+    only if it leaves and later re-enters with a newer trade.
+    """
+    screens = [sc for sc in store.screens() if sc["alert"]]
+    if not screens or events.empty:
+        return []
+
+    def closes(sym: str) -> pd.Series:
+        return store.load_prices(nse_ticker(sym))
+
+    ev = companies.with_company_info(events, store.company_info())
+    if "conviction" not in ev:
+        ev = conviction.add_conviction(ev, lambda sym: store.load_bars(nse_ticker(sym)))
+    pe = pledges.pledge_events(store.load_trades(), closes)
+    risk = {p["symbol"]: p["risk"] for p in pledges.summarize(pe)} if not pe.empty else {}
+    out = []
+    for sc in screens:
+        c = screener.Criteria.from_dict(sc["criteria"])
+        rows = screener.screen(screener.metrics(ev, closes, c.lookback_days, risk), c)
+        before = set(sc["last_matches"] or [])
+        for _, r in rows[~rows["symbol"].isin(before)].iterrows():
+            last = pd.Timestamp(r["last_trade"]).date().isoformat()
+            out.append({
+                "kind": "screen",
+                "dedup_key": f"{sc['id']}:{r['symbol']}:{last}",
+                "symbol": r["symbol"], "company": r["company"], "direction": "buy",
+                "value": float(r["net_value"]), "event_date": last,
+                "title": f"{r['symbol']}: entered your screen “{sc['name']}”",
+                "detail": f"net promoter flow {inr(r['net_value'])} · {int(r['buys'])} buys by "
+                          f"{int(r['promoters'])} promoters in {c.lookback_days} days",
+            })
+        store.set_screen_matches(sc["id"], sorted(rows["symbol"]))
+    return out
+
+
 def scan(store: Store) -> list[dict]:
     """Raise alerts for trades stored since the last scan. Returns the new alerts."""
     mark = store.get_meta(SCAN_MARK)
@@ -207,6 +245,7 @@ def scan(store: Store) -> list[dict]:
     watch = {w["symbol"] for w in store.watchlist()}
     raised = evaluate(new_events, all_events, watch, s) if not new_events.empty else []
     raised += pledge_alerts(new, watch, s, lambda sym: store.load_prices(nse_ticker(sym)))
+    raised += screen_alerts(store, all_events)
     added = store.add_alerts(raised)
     store.set_meta(SCAN_MARK, latest or mark)
     if added:

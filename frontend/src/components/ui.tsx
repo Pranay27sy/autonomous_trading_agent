@@ -94,3 +94,30 @@ export function StockLink({ symbol }: { symbol: string }) {
     </Link>
   );
 }
+
+/** Toggle chips for picking several options. */
+export function Chips({ options, selected, onChange }: { options: string[]; selected: string[]; onChange: (v: string[]) => void }) {
+  return (
+    <div className="chips">
+      {options.map((o) => {
+        const on = selected.includes(o);
+        return (
+          <button
+            key={o}
+            type="button"
+            className={`chip-toggle ${on ? "on" : ""}`}
+            aria-pressed={on}
+            onClick={() => onChange(on ? selected.filter((s) => s !== o) : [...selected, o])}
+          >
+            {o}
+          </button>
+        );
+      })}
+      {selected.length > 0 && (
+        <button type="button" className="btn-link faint" onClick={() => onChange([])}>
+          clear
+        </button>
+      )}
+    </div>
+  );
+}

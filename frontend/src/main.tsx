@@ -17,6 +17,7 @@ import { Alerts } from "./pages/Alerts";
 import { Overview } from "./pages/Overview";
 import { People, Person } from "./pages/People";
 import { Pledges } from "./pages/Pledges";
+import { Screener } from "./pages/Screener";
 import { Trades } from "./pages/Trades";
 import { Watchlist } from "./pages/Watchlist";
 
@@ -47,6 +48,7 @@ const router = createBrowserRouter([
       { path: "compare", lazy: comparePage },
       { path: "people", element: <People /> },
       { path: "pledges", element: <Pledges /> },
+      { path: "screener", element: <Screener /> },
       { path: "people/:slug", element: <Person /> },
       { path: "alerts", element: <Alerts /> },
       // The stock page carries the charting library; load it on first visit.

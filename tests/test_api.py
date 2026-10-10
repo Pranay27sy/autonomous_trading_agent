@@ -327,3 +327,18 @@ def test_compare(client):
     assert {t["direction"] for t in a["trades"]} == {"buy"}
     assert client.get("/api/compare", params={"symbols": "A,B,C,D,E"}).status_code == 422
     assert client.get("/api/compare", params={"symbols": "<x>"}).status_code == 422
+
+
+def test_screener_and_saved_screens(client):
+    presets = client.get("/api/screener/presets").json()
+    assert "Fresh clusters" in presets
+    run = client.post("/api/screener/run", json={"lookback_days": 1095, "min_promoters": 2}).json()
+    assert [r["symbol"] for r in run["rows"]] == ["ABCLTD"] and run["rows"][0]["watching"] is False
+    assert client.post("/api/screener/run", json={"lookback_days": 1}).status_code == 422
+    saved = client.post("/api/screens", json={"name": "Pairs", "alert": True,
+                                              "criteria": {"lookback_days": 1095, "min_promoters": 2}}).json()
+    assert saved["matches"] == 1
+    [s] = client.get("/api/screens").json()
+    assert s["name"] == "Pairs" and s["last_matches"] == ["ABCLTD"]
+    assert client.delete(f"/api/screens/{s['id']}").json() == {"deleted": s["id"]}
+    assert client.delete(f"/api/screens/{s['id']}").status_code == 404

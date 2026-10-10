@@ -4,7 +4,7 @@ import { useSearchParams } from "react-router";
 import { api, type BacktestRule, type BacktestTrade } from "../api";
 import { DataTable } from "../components/DataTable";
 import { EquityChart, EventStudyChart } from "../components/researchCharts";
-import { Card, ConvictionBadge, Empty, ErrorBox, Segmented, Skeleton, StockLink } from "../components/ui";
+import { Card, Chips, ConvictionBadge, Empty, ErrorBox, Segmented, Skeleton, StockLink } from "../components/ui";
 import { useFilters } from "../filters";
 import { day, inr, integer, pct, signClass } from "../format";
 
@@ -320,31 +320,5 @@ function Stat(props: { label: string; value: string; sub?: string; tone?: string
       <div className={`kpi-value ${props.tone ?? ""}`}>{props.value}</div>
       {props.sub && <div className="kpi-sub">{props.sub}</div>}
     </Card>
-  );
-}
-
-export function Chips({ options, selected, onChange }: { options: string[]; selected: string[]; onChange: (v: string[]) => void }) {
-  return (
-    <div className="chips">
-      {options.map((o) => {
-        const on = selected.includes(o);
-        return (
-          <button
-            key={o}
-            type="button"
-            className={`chip-toggle ${on ? "on" : ""}`}
-            aria-pressed={on}
-            onClick={() => onChange(on ? selected.filter((s) => s !== o) : [...selected, o])}
-          >
-            {o}
-          </button>
-        );
-      })}
-      {selected.length > 0 && (
-        <button type="button" className="btn-link faint" onClick={() => onChange([])}>
-          clear
-        </button>
-      )}
-    </div>
   );
 }

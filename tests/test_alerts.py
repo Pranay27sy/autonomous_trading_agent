@@ -212,3 +212,15 @@ def test_pledge_invocation_alerts_anywhere_and_watched_pledges(store):
     assert len(titles) == 2
     assert titles[0].startswith("NEWCO: lender invoked pledged promoter shares (500,000 shares")
     assert titles[1].startswith("XYZIND: promoter pledged shares")
+
+
+def test_saved_screen_alerts_when_a_stock_enters(store):
+    alerts.scan(store)
+    AlertSettings(big_buy_value=None, cluster_min_people=None).save(store)
+    sid = store.save_screen("Big buyers", {"lookback_days": 365, "min_net_value": 5e7}, True, [])
+    store.upsert_trades([trade("Founder", 9e7, symbol="NEWCO")])
+    [a] = alerts.scan(store)
+    assert a["kind"] == "screen" and a["title"] == "NEWCO: entered your screen “Big buyers”"
+    assert store.screens()[0]["last_matches"] == ["NEWCO"] and store.screens()[0]["id"] == sid
+    store.upsert_trades([trade("Founder", 1e7, symbol="NEWCO", day="2024-03-06")])
+    assert alerts.scan(store) == []  # still in the screen: no repeat

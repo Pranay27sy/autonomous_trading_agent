@@ -169,7 +169,7 @@ export interface WatchItem {
   change_1m: number | null;
 }
 
-export type AlertKind = "watchlist" | "conviction" | "big_buy" | "big_sell" | "cluster" | "pledge";
+export type AlertKind = "watchlist" | "conviction" | "big_buy" | "big_sell" | "cluster" | "pledge" | "screen";
 
 export interface Alert {
   id: number;
@@ -401,6 +401,50 @@ export interface CompareStock {
   } | null;
 }
 
+export interface ScreenCriteria {
+  lookback_days: number;
+  min_net_value: number | null;
+  min_buys: number | null;
+  min_promoters: number | null;
+  min_conviction: number | null;
+  /** 0.2 = at least 20% below the 52-week high */
+  min_below_high: number | null;
+  max_change_3m: number | null;
+  sectors: string[];
+  caps: string[];
+  exclude_pledge_risk: boolean;
+  sort: "net_value" | "conviction" | "below_high" | "promoters" | "change_3m";
+}
+
+export interface ScreenRow {
+  symbol: string;
+  company: string | null;
+  sector: string | null;
+  cap_bucket: string | null;
+  net_value: number;
+  buys: number;
+  sells: number;
+  promoters: number;
+  conviction: number | null;
+  last_trade: string;
+  last_direction: Side;
+  last_close: number | null;
+  change_1m: number | null;
+  change_3m: number | null;
+  below_high: number | null;
+  pledge_risk: "high" | "rising" | "flat" | "easing" | null;
+  watching: boolean;
+}
+
+export interface SavedScreen {
+  id: number;
+  name: string;
+  criteria: Partial<ScreenCriteria>;
+  alert: boolean;
+  last_matches: string[] | null;
+  created_at: string;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -452,6 +496,16 @@ export const api = {
     }),
   sectors: (f: Filters) => request<Sectors>(withFilters("/api/sectors", f)),
   market: (f: Filters) => request<MarketFlow>(withFilters("/api/market", f)),
+  screenPresets: () => request<Record<string, Partial<ScreenCriteria>>>("/api/screener/presets"),
+  runScreen: (c: ScreenCriteria, f: Filters) =>
+    request<{ rows: ScreenRow[]; count: number }>(`/api/screener/run?market_only=${f.marketOnly}&basis=${f.basis}`, {
+      method: "POST",
+      json: c,
+    }),
+  screens: () => request<SavedScreen[]>("/api/screens"),
+  saveScreen: (name: string, criteria: ScreenCriteria, alert: boolean) =>
+    request<{ id: number; name: string; matches: number }>("/api/screens", { method: "POST", json: { name, criteria, alert } }),
+  deleteScreen: (id: number) => request<{ deleted: number }>(`/api/screens/${id}`, { method: "DELETE" }),
   compare: (symbols: string[], days: number | null, f: Filters) =>
     request<{ start: string; end: string; stocks: CompareStock[] }>(
       withFilters("/api/compare", { ...f, period: "All" }, { symbols: symbols.join(","), ...(days ? { days: String(days) } : {}) }),

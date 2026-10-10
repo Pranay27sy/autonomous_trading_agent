@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import alerts as alert_rules
-from . import notify, pledges, research, service
+from . import notify, pledges, research, screener, service
 from .config import Settings, configure_logging, load_settings
 from .prices import BENCHMARK, nse_ticker
 from .refresh import RefreshInProgress, refresh_all
@@ -50,6 +50,26 @@ class AlertSettingsBody(BaseModel):
     market_only: bool = True
     min_conviction: int | None = Field(default=None, ge=0, le=100)
     pledge_invocations: bool = True
+
+
+class CriteriaBody(BaseModel):
+    lookback_days: int = Field(default=90, ge=7, le=1095)
+    min_net_value: float | None = Field(default=None, ge=-1e13, le=1e13)
+    min_buys: int | None = Field(default=None, ge=0, le=1000)
+    min_promoters: int | None = Field(default=None, ge=0, le=100)
+    min_conviction: int | None = Field(default=None, ge=0, le=100)
+    min_below_high: float | None = Field(default=None, ge=0, le=1)
+    max_change_3m: float | None = Field(default=None, ge=-1, le=10)
+    sectors: list[str] = Field(default_factory=list, max_length=50)
+    caps: list[str] = Field(default_factory=list, max_length=10)
+    exclude_pledge_risk: bool = False
+    sort: Literal["net_value", "conviction", "below_high", "promoters", "change_3m"] = "net_value"
+
+
+class ScreenBody(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    criteria: CriteriaBody
+    alert: bool = False
 
 
 class MarkRead(BaseModel):
@@ -326,6 +346,57 @@ def create_app(settings: Settings | None = None,
             "companies": pledges.summarize(events, shares),
             "events": events.head(300).to_dict("records"),
         })
+
+    # --- screener -------------------------------------------------------------------
+    def screen_rows(request: Request, lookback_days: int, market_only: bool, basis: str):
+        """Per-stock screener metrics; cached until the next refresh."""
+        store: Store = request.app.state.store
+
+        def build():
+            events = request.app.state.events.get(market_only, basis)
+            pe = pledge_events(request)
+            risk = {p["symbol"]: p["risk"] for p in pledges.summarize(pe)} if not pe.empty else {}
+            return screener.metrics(events, lambda s: store.load_prices(nse_ticker(s)),
+                                    lookback_days, risk)
+
+        return cached(request, ("screen_rows", lookback_days, market_only, basis), build)
+
+    def run_screen(request: Request, c: screener.Criteria, market_only=True,
+                   basis="disclosure_date"):
+        return screener.screen(screen_rows(request, c.lookback_days, market_only, basis), c)
+
+    @app.get("/api/screener/presets")
+    def presets() -> dict:
+        return {name: c.to_dict() for name, c in screener.PRESETS.items()}
+
+    @app.post("/api/screener/run")
+    def screener_run(request: Request, body: CriteriaBody, market_only: bool = True,
+                     basis: Literal["disclosure_date", "trade_to"] = "disclosure_date") -> dict:
+        rows = run_screen(request, screener.Criteria.from_dict(body.model_dump()), market_only, basis)
+        watched = {w["symbol"] for w in request.app.state.store.watchlist()}
+        out = service.clean_tree(rows.to_dict("records"))
+        for r in out:
+            r["watching"] = r["symbol"] in watched
+        return {"rows": out, "count": len(out)}
+
+    @app.get("/api/screens")
+    def list_screens(request: Request) -> list[dict]:
+        return request.app.state.store.screens()
+
+    @app.post("/api/screens")
+    def save_screen(request: Request, body: ScreenBody) -> dict:
+        c = screener.Criteria.from_dict(body.criteria.model_dump())
+        # Remember today's matches so an alerting screen only flags stocks that enter later.
+        matches = sorted(run_screen(request, c)["symbol"]) if body.alert else None
+        sid = request.app.state.store.save_screen(body.name.strip(), c.to_dict(), body.alert,
+                                                  matches)
+        return {"id": sid, "name": body.name.strip(), "matches": len(matches or [])}
+
+    @app.delete("/api/screens/{screen_id}")
+    def delete_screen(request: Request, screen_id: int) -> dict:
+        if not request.app.state.store.delete_screen(screen_id):
+            raise HTTPException(404, "No such screen")
+        return {"deleted": screen_id}
 
     @app.get("/api/people")
     def people(request: Request, f: F,
