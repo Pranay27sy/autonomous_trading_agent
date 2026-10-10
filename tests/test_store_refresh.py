@@ -208,3 +208,99 @@ def test_refresh_all_since_overrides_window(tmp_path):
     refresh.refresh_all(store, 30, client=client, downloader=lambda t, s: pd.Series(dtype=float),
                         today=date(2024, 3, 1), since=date(2023, 12, 1))
     assert client.ranges[0] == (date(2023, 12, 1), date(2024, 3, 1))
+
+
+def _bars(closes: pd.Series) -> pd.DataFrame:
+    return pd.DataFrame({"open": closes - 1, "high": closes + 2, "low": closes - 2,
+                         "close": closes, "volume": 1000.0}, index=closes.index)
+
+
+def test_old_prices_table_gets_ohlc_columns(tmp_path):
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE prices (ticker TEXT NOT NULL, date TEXT NOT NULL, "
+                 "close REAL NOT NULL, PRIMARY KEY (ticker, date))")
+    conn.execute("INSERT INTO prices VALUES ('X.NS', '2024-01-01', 100.0)")
+    conn.commit()
+    conn.close()
+    store = Store(path)
+    bars = store.load_bars("X.NS")
+    assert bars["close"].iloc[0] == 100.0 and pd.isna(bars["open"].iloc[0])
+    assert store.missing_ohlc("X.NS")
+
+
+def test_bars_round_trip(tmp_path):
+    store = Store(tmp_path / "t.db")
+    bars = _bars(pd.Series([100.0, 101.0], index=pd.bdate_range("2024-01-01", periods=2)))
+    assert store.upsert_prices("X.NS", bars) == 2
+    back = store.load_bars("X.NS")
+    assert list(back.columns) == ["open", "high", "low", "close", "volume"]
+    assert back.iloc[1].to_dict() == {"open": 100.0, "high": 103.0, "low": 99.0,
+                                      "close": 101.0, "volume": 1000.0}
+    assert not store.missing_ohlc("X.NS")
+    assert list(store.load_prices("X.NS")) == [100.0, 101.0]
+
+
+def test_close_only_cache_is_reloaded_once_with_candles(tmp_path):
+    store = Store(tmp_path / "t.db")
+    full = pd.Series([100.0, 101, 102, 103], index=pd.bdate_range("2024-01-01", periods=4))
+    store.upsert_prices("X.NS", full.iloc[:3])  # cached before candles were stored
+    calls = []
+
+    def dl(ticker, start):
+        calls.append(start)
+        return _bars(full[full.index >= pd.Timestamp(start)])
+
+    refresh_prices(store, "X.NS", start=date(2024, 1, 1), downloader=dl)
+    assert calls == [date(2023, 12, 29), date(2024, 1, 1)]  # incremental, then full reload
+    assert not store.missing_ohlc("X.NS") and len(store.load_bars("X.NS")) == 4
+    refresh_prices(store, "X.NS", start=date(2024, 1, 1), downloader=dl)
+    assert len(calls) == 3  # back to incremental only
+
+
+def test_full_reload_drops_bars_the_source_no_longer_has(tmp_path):
+    store = Store(tmp_path / "t.db")
+    days = pd.bdate_range("2024-01-01", periods=4)
+    store.upsert_prices("X.NS", pd.Series([100.0, 101, 102, 103], index=days))
+    fresh = pd.Series([100.0, 101, 103], index=days.delete(2))  # day 3 was a holiday after all
+
+    refresh_prices(store, "X.NS", start=date(2024, 1, 1),
+                   downloader=lambda t, s: _bars(fresh[fresh.index >= pd.Timestamp(s)]))
+    assert len(store.load_bars("X.NS")) == 3 and not store.missing_ohlc("X.NS")
+
+
+def test_empty_full_reload_keeps_the_cache(tmp_path):
+    store = Store(tmp_path / "t.db")
+    days = pd.bdate_range("2024-01-01", periods=3)
+    store.upsert_prices("X.NS", pd.Series([100.0, 101, 102], index=days))
+    calls = []
+
+    def dl(ticker, start):
+        calls.append(start)
+        # A changed last close forces a full reload, which then comes back empty.
+        if len(calls) == 1:
+            return _bars(pd.Series([100.0], index=days[-1:]))
+        return _bars(pd.Series(dtype=float))
+
+    refresh_prices(store, "X.NS", start=date(2024, 1, 1), downloader=dl)
+    assert len(calls) == 2 and len(store.load_bars("X.NS")) == 3
+
+
+def test_filings_nse_deleted_warn_but_do_not_fail_the_refresh(tmp_path):
+    gone = {"symbol": "NURECA", "appId": "834", "xmlFileName": "g.xml",
+            "broadcastDateTime": "09-Jun-2026 18:00:01"}
+
+    class Gone(FakeClient):
+        failed_filings: list = []
+        missing_filings = [gone]
+
+        def retry_filings(self, filings):
+            return []
+
+    store = Store(tmp_path / "t.db")
+    store.set_failed_filings([gone])  # queued by an earlier refresh
+    res = refresh.refresh_all(store, 30, client=Gone(), downloader=lambda t, s: pd.Series(dtype=float),
+                              today=date(2024, 3, 1))
+    assert not res.errors and store.get_meta("last_refresh")
+    assert store.failed_filings() == []
+    assert any("NURECA" in w for w in res.warnings)

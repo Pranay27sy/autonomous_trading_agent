@@ -1,0 +1,212 @@
+"""What the API serves: filtering events and shaping them into JSON-ready dicts.
+
+Everything here is plain pandas, independent of the web framework.
+"""
+from __future__ import annotations
+
+import math
+import threading
+from collections import OrderedDict
+from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from . import analysis
+from .prices import BENCHMARK, nse_ticker
+from .store import Store
+
+PERIODS: dict[str, int | None] = {"1M": 30, "3M": 91, "6M": 182, "1Y": 365, "3Y": 1095,
+                                  "All": None}
+SIGNAL_HORIZON = 60
+_BAR_FIELDS = ("open", "high", "low", "close", "volume")
+
+# Columns sent for each trade row; returns are fractions (0.05 = +5%).
+TRADE_FIELDS = ["event_date", "symbol", "company", "person", "category", "direction", "mode",
+                "quantity", "value", "holding_before_pct", "holding_after_pct",
+                "holding_change_pct", "disclosure_date", "trade_to",
+                *[f"ret_{h}" for h in analysis.HORIZONS], *[f"exc_{h}" for h in analysis.HORIZONS]]
+
+
+@dataclass(frozen=True)
+class Filters:
+    period: str = "1Y"
+    sides: tuple[str, ...] = ("buy", "sell")
+    min_value: float = 1e6
+    market_only: bool = True
+    basis: str = "disclosure_date"
+
+
+class EventCache:
+    """Promoter events with forward returns, recomputed only after a refresh.
+
+    Computing returns reads every stock's prices, so the result is cached per
+    (market_only, basis), keyed by the last refresh time so a refresh made by
+    another process (the scheduled CLI) is picked up.
+    """
+
+    def __init__(self, store: Store, max_entries: int = 4):
+        self.store = store
+        self.max_entries = max_entries
+        self._cache: OrderedDict[tuple, pd.DataFrame] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def version(self) -> str:
+        return self.store.get_meta("last_refresh") or ""
+
+    def get(self, market_only: bool, basis: str) -> pd.DataFrame:
+        key = (market_only, basis, self.version())
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                return self._cache[key]
+            events = analysis.promoter_events(self.store.load_trades(), market_only, basis)
+            if not events.empty:
+                events = analysis.event_returns(
+                    events, lambda s: self.store.load_prices(nse_ticker(s)),
+                    self.store.load_prices(BENCHMARK))
+            self._cache[key] = events
+            while len(self._cache) > self.max_entries:
+                self._cache.popitem(last=False)
+            return events
+
+
+def filter_events(events: pd.DataFrame, f: Filters) -> pd.DataFrame:
+    if events.empty:
+        return events
+    keep = events["direction"].isin(f.sides) & (events["value"].fillna(0) >= f.min_value)
+    days = PERIODS[f.period]
+    if days is not None:
+        keep &= events["event_date"] >= events["event_date"].max() - pd.Timedelta(days=days)
+    return events[keep]
+
+
+# --- JSON helpers -------------------------------------------------------------
+def clean(value: Any) -> Any:
+    """Make a value JSON-safe: NaN/NaT -> None, numpy -> Python, dates -> ISO."""
+    if value is None or value is pd.NaT:
+        return None
+    if isinstance(value, (pd.Timestamp, datetime, date)):
+        return value.date().isoformat() if isinstance(value, (pd.Timestamp, datetime)) \
+            else value.isoformat()
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def records(df: pd.DataFrame, fields: list[str]) -> list[dict]:
+    cols = [c for c in fields if c in df.columns]
+    return [{c: clean(v) for c, v in zip(cols, row, strict=True)}
+            for row in df[cols].itertuples(index=False, name=None)]
+
+
+def weekly(view: pd.DataFrame, weeks: int) -> list[dict]:
+    """₹ value bought, sold and net per week, the last `weeks` weeks (for sparklines)."""
+    if view.empty:
+        return []
+    idx = view.set_index("event_date")
+    buy = idx.loc[idx["direction"] == "buy", "value"].fillna(0).resample("W").sum()
+    sell = idx.loc[idx["direction"] == "sell", "value"].fillna(0).resample("W").sum()
+    end = view["event_date"].max() + pd.offsets.Week(weekday=6, n=0)  # that week's Sunday
+    full = pd.date_range(end=end.normalize(), periods=weeks, freq="W")
+    buy, sell = buy.reindex(full, fill_value=0), sell.reindex(full, fill_value=0)
+    return [{"week": d.date().isoformat(), "buy": float(b), "sell": float(s),
+             "net": float(b - s)} for d, b, s in zip(full, buy, sell, strict=True)]
+
+
+def sparkline_weeks(period: str) -> int:
+    days = PERIODS[period]
+    return 52 if days is None else int(min(52, max(4, days // 7)))
+
+
+# --- payloads -------------------------------------------------------------------
+def overview(view: pd.DataFrame, f: Filters, min_people: int = 2, window_days: int = 30) -> dict:
+    buys = view[view["direction"] == "buy"] if not view.empty else view
+    sells = view[view["direction"] == "sell"] if not view.empty else view
+    summary = analysis.summarize(view) if not view.empty else pd.DataFrame()
+    lb = analysis.leaderboard(view)
+    cl = analysis.clusters(view, min_people, window_days) if not view.empty else pd.DataFrame(
+        columns=["symbol", "company", "start", "end", "promoters", "total_value"])
+    return {
+        "range": {"from": clean(view["event_date"].min()) if not view.empty else None,
+                  "to": clean(view["event_date"].max()) if not view.empty else None},
+        "kpis": {
+            "trades": len(view),
+            "stocks": int(view["symbol"].nunique()) if not view.empty else 0,
+            "stocks_bought": int(buys["symbol"].nunique()) if not view.empty else 0,
+            "buy_value": float(buys["value"].sum()) if not view.empty else 0.0,
+            "buy_count": len(buys),
+            "sell_value": float(sells["value"].sum()) if not view.empty else 0.0,
+            "sell_count": len(sells),
+            "net_value": float(view["signed_value"].sum()) if not view.empty else 0.0,
+        },
+        "weekly": weekly(view, sparkline_weeks(f.period)),
+        "signal_horizon": SIGNAL_HORIZON,
+        "summary": records(summary, ["direction", "horizon_days", "events", "mean_return",
+                                     "median_return", "mean_excess", "hit_rate"]),
+        "clusters": records(cl, ["symbol", "company", "start", "end", "promoters",
+                                 "total_value"]),
+        "top_buyers": records(lb[lb["net_value"] > 0].head(10),
+                              ["symbol", "company", "net_value", "buys", "sells"]),
+        "top_sellers": records(lb[lb["net_value"] < 0].tail(10).iloc[::-1],
+                               ["symbol", "company", "net_value", "buys", "sells"]),
+    }
+
+
+def trades(view: pd.DataFrame, query: str | None = None) -> dict:
+    if query and not view.empty:
+        q = query.strip().lower()
+        hay = (view["symbol"] + " " + view["company"].fillna("") + " "
+               + view["person"].fillna("")).str.lower()
+        view = view[hay.str.contains(q, regex=False)]
+    return {"total": len(view), "rows": records(view, TRADE_FIELDS)}
+
+
+def stock_list(events: pd.DataFrame, view: pd.DataFrame) -> list[dict]:
+    """Every stock with promoter trades; `trades` counts those matching the filters."""
+    if events.empty:
+        return []
+    active = view.groupby("symbol").size() if not view.empty else pd.Series(dtype=int)
+    firsts = events.drop_duplicates("symbol").set_index("symbol")["company"]
+    out = [{"symbol": s, "company": clean(firsts[s]), "trades": int(active.get(s, 0))}
+           for s in firsts.index]
+    return sorted(out, key=lambda r: (-r["trades"], r["symbol"]))
+
+
+def stock(events: pd.DataFrame, symbol: str, sides: tuple[str, ...], bars: pd.DataFrame) -> dict:
+    """bars: daily open/high/low/close/volume (Store.load_bars)."""
+    prices = bars["close"]
+    sev = events[(events["symbol"] == symbol) & events["direction"].isin(sides)]
+    buys = sev[sev["direction"] == "buy"]
+    after = buys["exc_60"].dropna() if "exc_60" in buys else pd.Series(dtype=float)
+    hold = sev.dropna(subset=["holding_after_pct"]).sort_values("event_date")
+    last = prices.iloc[-1] if len(prices) else None
+    year_ago = prices.asof(prices.index[-1] - pd.Timedelta(days=365)) if len(prices) else None
+    return {
+        "symbol": symbol,
+        "company": clean(events.loc[events["symbol"] == symbol, "company"].iloc[0]),
+        "kpis": {
+            "last_close": clean(last),
+            "last_date": clean(prices.index[-1]) if len(prices) else None,
+            "change_1y": clean(last / year_ago - 1) if last is not None and pd.notna(year_ago)
+            else None,
+            "net_value": float(sev["signed_value"].sum()),
+            "buys": len(buys),
+            "sells": len(sev) - len(buys),
+            "last_holding_pct": clean(hold["holding_after_pct"].iloc[-1]) if len(hold) else None,
+            "after_buys_exc_60": clean(after.mean()) if len(after) else None,
+            "after_buys_hit_60": clean((after > 0).mean()) if len(after) else None,
+            "after_buys_n": len(after),
+        },
+        # Bars cached before candles were stored have only a close (open etc. null).
+        "prices": [{"time": d.date().isoformat(),
+                    **{c: None if pd.isna(v) else round(float(v), 4)
+                       for c, v in zip(_BAR_FIELDS, row, strict=True)}}
+                   for d, row in zip(bars.index, bars[list(_BAR_FIELDS)].itertuples(
+                       index=False, name=None), strict=True)],
+        "trades": records(sev, TRADE_FIELDS),
+    }

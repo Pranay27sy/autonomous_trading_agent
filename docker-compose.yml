@@ -1,0 +1,27 @@
+# The web app plus a background refresher sharing one SQLite volume.
+#   docker compose up -d --build      ->  http://localhost:8000
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # The refresher keeps data fresh; the app only refreshes when asked to.
+      PROMOTER_AUTO_REFRESH: "0"
+    volumes:
+      - promoter-data:/data
+    restart: unless-stopped
+
+  refresher:
+    build: .
+    command: ["promoter-refresh", "--every-hours", "6", "--backfill-days", "365"]
+    healthcheck:
+      disable: true
+    environment:
+      PROMOTER_LOG_FILE: /data/logs/refresh.log
+    volumes:
+      - promoter-data:/data
+    restart: unless-stopped
+
+volumes:
+  promoter-data:

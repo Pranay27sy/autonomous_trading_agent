@@ -2,16 +2,32 @@
 
 ## Promoter Trades Analyzer
 
-A local Streamlit app that shows promoter buying and selling in NSE-listed stocks
-and what the share price did afterwards.
+A web app that shows promoter buying and selling in NSE-listed stocks and what the share
+price did afterwards. A FastAPI backend serves JSON and a React + TypeScript frontend, in a
+dark trading-terminal style. It has three pages:
 
-- **Recent trades:** every promoter / promoter-group buy and sell, with value,
-  change in holding %, and the returns that followed. It also flags *clusters*,
-  where several promoters bought the same stock within a few days.
-- **Stock drill-down:** price chart with buy/sell markers (sized by value) and
-  per-trade returns at +1/+5/+20/+60/+120 trading days, both raw and relative to Nifty 50.
-- **Does it work?:** average excess return vs Nifty and hit rate after promoter buys
-  vs sells, plus the top net promoter buyers and sellers.
+- **Overview:** promoter buying, selling and net flow with weekly sparklines. Then the
+  key question, *does promoter buying beat the market?*: average return vs Nifty and how
+  often it beat Nifty after promoter buys vs sells. Also *buying clusters* (several
+  promoters buying the same stock within a few weeks) and the top net buyers and sellers.
+- **Trades:** every promoter / promoter-group buy and sell, searchable, with value, change
+  in holding %, and the returns that followed (green/red).
+- **Stock:** price chart with buy ▲ / sell ▼ markers sized by rupee value, and per-trade
+  returns at +1/+5/+20/+60/+120 trading days, raw and relative to Nifty 50. The selected
+  stock is in the URL, so links can be shared.
+
+Click any symbol in a table to open its stock page. The filter bar (period, side, minimum
+value, open-market only, and the date returns are measured from) applies to every page and
+is kept in the URL, so any view can be bookmarked or shared. The data menu at the top right
+shows how fresh the data is, lets you start a refresh, and shows its progress.
+
+### Layout
+| Path | What |
+|---|---|
+| `promoter_tracker/` | Python: NSE client, prices, SQLite store, analysis, refresh CLI |
+| `promoter_tracker/api.py` | FastAPI app: JSON under `/api`, serves the built frontend at `/` |
+| `promoter_tracker/service.py` | Filtering and response shaping for the API (plain pandas) |
+| `frontend/` | React + TypeScript (Vite), TanStack Query, TradingView Lightweight Charts |
 
 ### Data (all free)
 | What | Source |
@@ -23,28 +39,61 @@ Everything is cached in `data/promoter.db` (SQLite). Refreshes are incremental:
 only disclosures since the last one (with a 7-day overlap for late filings) and
 only new price bars are downloaded. Disclosures are saved one 30-day chunk at a time,
 filings whose XBRL file failed to download are retried on the next refresh, and a
-revised filing replaces the original's rows. The app refreshes itself when the cache is
-more than 6 hours old, and there's a **Refresh latest data** button.
+revised filing replaces the original's rows. When the server starts with data more than
+6 hours old it refreshes in the background, and you can start one from the data menu.
 
 ### Run
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-streamlit run promoter_tracker/app.py
+pip install -e ".[dev]"
+cd frontend && npm ci && npm run build && cd ..
+uvicorn promoter_tracker.api:app --port 8000        # open http://localhost:8000
 ```
-The first load pulls the last 365 days of disclosures (you can change this in the sidebar),
-then prices for every stock with a promoter trade. This takes a few minutes.
+Needs Python 3.10+ and Node 20+. On the first start the server pulls the last 365 days of
+disclosures, then prices for every stock with a promoter trade, in the background. This
+takes a few minutes; the data menu shows progress. API docs are at
+http://localhost:8000/api/docs.
+
+For frontend work, run the API with `--reload` and, in another terminal, `npm run dev` in
+`frontend/`. Vite serves the UI on http://localhost:5173 with hot reload and proxies `/api`
+to port 8000.
 
 To refresh on a schedule without opening the app (e.g. cron at 7 pm IST on weekdays):
 ```bash
-python -m promoter_tracker.refresh --backfill-days 730
+promoter-refresh --backfill-days 730      # same as: python -m promoter_tracker.refresh
 ```
+It exits 0 on success, 1 if the refresh had errors, and 75 if another refresh (the app or
+another cron run) was already running, so a scheduler can alert on failures. Add
+`--every-hours 6` to keep it running and refreshing instead of exiting.
 
-Environment variables: `PROMOTER_DB` (SQLite path), `PROMOTER_AUTO_REFRESH=0` (turn off auto-refresh).
+Only one refresh runs at a time across all processes (a lock file next to the database),
+and the database runs in SQLite WAL mode, so the app keeps serving while a refresh writes.
+
+### Deploy with Docker
+```bash
+docker compose up -d --build
+```
+This builds the frontend and starts the app on port 8000, plus a `refresher` container that
+updates the data every 6 hours. Both share the `promoter-data` volume. The app's own
+auto-refresh is turned off there. The image runs as a non-root user and has a health check
+on `/api/health`. Refresh logs go to `/data/logs/refresh.log` in the volume.
+
+The app has no login. Put it behind a reverse proxy with authentication before you expose it
+beyond your own machine or network.
+
+### Configuration
+| Variable | Default | Meaning |
+|---|---|---|
+| `PROMOTER_DB` | `data/promoter.db` | SQLite path |
+| `PROMOTER_AUTO_REFRESH` | `1` | `0` stops the server refreshing stale data when it starts |
+| `PROMOTER_STALE_HOURS` | `6` | How old the data must be to count as stale |
+| `PROMOTER_LOG_LEVEL` | `INFO` | Logging level |
+| `PROMOTER_LOG_FILE` | none | Also log to this file (rotated at 5 MB, 3 kept) |
+| `PROMOTER_FRONTEND_DIST` | `frontend/dist` | Built frontend to serve at `/` |
 
 ### How returns are measured
 - The event date defaults to the **disclosure date**, the first day the public could act.
-  You can switch it to the promoter's trade date in the sidebar.
+  You can switch it to the promoter's trade date in the filter bar.
 - Entry is the close of the **first trading day after** the event date. Many
   disclosures land after market hours, so this is the conservative choice.
 - Excess return = stock return minus Nifty 50 return over the same days.
@@ -60,7 +109,10 @@ Environment variables: `PROMOTER_DB` (SQLite path), `PROMOTER_AUTO_REFRESH=0` (t
 - Survivorship: delisted stocks have no Yahoo prices and are skipped.
 - For research only, not investment advice.
 
-### Tests
+### Tests and lint
 ```bash
-pytest
+pytest && ruff check .
+cd frontend && npm run typecheck && npm test
 ```
+CI (GitHub Actions) runs the Python checks on 3.10, 3.12 and 3.13, typechecks, tests, builds
+and audits the frontend, and builds the Docker image.
