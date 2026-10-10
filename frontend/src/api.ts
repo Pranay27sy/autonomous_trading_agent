@@ -367,6 +367,23 @@ export interface PledgeSummary {
   events: PledgeEvent[];
 }
 
+export interface MarketFlow {
+  weekly: {
+    week: string;
+    buy_value: number;
+    sell_value: number;
+    net_value: number;
+    trades: number;
+    stocks_net_buying: number;
+    stocks_net_selling: number;
+    nifty: number | null;
+  }[];
+  daily: { day: string; net_value: number; trades: number }[];
+  timing: { group: string; weeks: number; avg_net_value: number; nifty_next: number; nifty_up_share: number }[];
+  timing_weeks: number;
+  totals: { weeks: number; net_buying_weeks: number; avg_breadth: number; avg_sellers: number } | null;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -417,6 +434,7 @@ export const api = {
       method: "DELETE",
     }),
   sectors: (f: Filters) => request<Sectors>(withFilters("/api/sectors", f)),
+  market: (f: Filters) => request<MarketFlow>(withFilters("/api/market", f)),
   pledges: (period: string) => request<PledgeSummary>(`/api/pledges?period=${encodeURIComponent(period)}`),
   people: (f: Filters) => request<PersonRow[]>(withFilters("/api/people", f)),
   person: (slug: string, f: Filters) =>

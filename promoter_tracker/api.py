@@ -343,6 +343,12 @@ def create_app(settings: Settings | None = None,
             raise HTTPException(404, "No promoter trades for this person")
         return out
 
+    @app.get("/api/market")
+    def market(request: Request, f: F) -> dict:
+        _, view = events_for(request, f)
+        return cached(request, ("market", f), lambda: service.market(
+            view, request.app.state.store.load_prices(BENCHMARK)))
+
     @app.get("/api/sectors")
     def sectors(request: Request, f: F) -> dict:
         _, view = events_for(request, f)

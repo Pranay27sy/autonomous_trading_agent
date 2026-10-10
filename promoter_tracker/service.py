@@ -392,3 +392,61 @@ def person(events: pd.DataFrame, slug: str) -> dict | None:
         "companies": sorted(companies_, key=lambda c: -abs(c["net_value"])),
         "trades_list": records(e.sort_values("event_date", ascending=False), TRADE_FIELDS),
     }
+
+
+# --- market-wide flow -------------------------------------------------------------
+TIMING_WEEKS = 13  # forward window for "what did Nifty do next"
+
+
+def market(view: pd.DataFrame, bench: pd.Series) -> dict:
+    """Weekly promoter flow and breadth, daily flow for a calendar, Nifty alongside.
+
+    Also: Nifty's return over the next TIMING_WEEKS weeks after weeks of heavy,
+    middling and light net promoter buying (terciles), as a rough timing gauge.
+    """
+    if view.empty:
+        return {"weekly": [], "daily": [], "timing": [], "totals": None}
+    idx = view.set_index("event_date")
+    wk = idx.groupby(pd.Grouper(freq="W"))
+    per_stock = idx.groupby([pd.Grouper(freq="W"), "symbol"])["signed_value"].sum()
+    breadth = per_stock.groupby(level=0).agg(lambda s: int((s > 0).sum())).rename("stocks_net_buying")
+    sellers = per_stock.groupby(level=0).agg(lambda s: int((s < 0).sum())).rename("stocks_net_selling")
+    weekly = pd.DataFrame({
+        "buy_value": wk.apply(lambda g: g.loc[g["direction"] == "buy", "value"].sum()),
+        "sell_value": wk.apply(lambda g: g.loc[g["direction"] == "sell", "value"].sum()),
+        "net_value": wk["signed_value"].sum(),
+        "trades": wk.size(),
+    }).join(breadth).join(sellers).fillna(0)
+    b = bench.dropna().sort_index()
+    weekly["nifty"] = [b.asof(d) if len(b) else None for d in weekly.index]
+
+    # Timing: forward Nifty return after each week, grouped by net-buying tercile.
+    timing = []
+    if len(b) and len(weekly) >= 9:
+        fwd = [b.asof(d + pd.Timedelta(weeks=TIMING_WEEKS)) / b.asof(d) - 1
+               if d + pd.Timedelta(weeks=TIMING_WEEKS) <= b.index[-1] and b.asof(d) else None
+               for d in weekly.index]
+        t = weekly.assign(fwd=fwd).dropna(subset=["fwd"])
+        if len(t) >= 9:
+            t = t.assign(tercile=pd.qcut(t["net_value"].rank(method="first"), 3,
+                                         labels=["Most net selling", "In between", "Most net buying"]))
+            for name, g in t.groupby("tercile", observed=True):
+                timing.append({"group": str(name), "weeks": len(g),
+                               "avg_net_value": float(g["net_value"].mean()),
+                               "nifty_next": float(g["fwd"].mean()),
+                               "nifty_up_share": float((g["fwd"] > 0).mean())})
+
+    daily = idx.groupby(idx.index.normalize()).agg(net_value=("signed_value", "sum"),
+                                                    trades=("signed_value", "size"))
+    return {
+        "weekly": [{"week": d.date().isoformat(), **{k: clean(v) for k, v in r.items()}}
+                   for d, r in weekly.iterrows()],
+        "daily": [{"day": d.date().isoformat(), "net_value": float(r["net_value"]),
+                   "trades": int(r["trades"])} for d, r in daily.iterrows()],
+        "timing": timing,
+        "timing_weeks": TIMING_WEEKS,
+        "totals": {"weeks": len(weekly),
+                   "net_buying_weeks": int((weekly["net_value"] > 0).sum()),
+                   "avg_breadth": float(weekly["stocks_net_buying"].mean()),
+                   "avg_sellers": float(weekly["stocks_net_selling"].mean())},
+    }

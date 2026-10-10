@@ -307,3 +307,13 @@ def test_pledges_endpoint_and_stock_pledges(tmp_path):
         assert body["events"][0]["value"] > 1000  # valued at the close, not the filed 47
         stock = c.get("/api/stocks/ABCLTD", params=ALL).json()
         assert [p["kind"] for p in stock["pledges"]] == ["invoked"]
+
+
+def test_market_flow(client):
+    body = client.get("/api/market", params=ALL).json()
+    weeks = {w["week"]: w for w in body["weekly"]}
+    assert sum(w["trades"] for w in weeks.values()) == 4
+    jan14 = weeks["2024-01-14"]  # Sita's buy on 12 Jan
+    assert jan14["stocks_net_buying"] == 1 and jan14["nifty"] > 0
+    assert {d["day"] for d in body["daily"]} >= {"2024-01-05", "2024-01-12"}
+    assert body["totals"]["weeks"] == len(body["weekly"])

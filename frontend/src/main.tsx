@@ -32,6 +32,7 @@ const queryClient = new QueryClient({
 
 const stockPage = () => import("./pages/Stock").then((m) => ({ Component: m.Stock }));
 const researchPage = () => import("./pages/Research").then((m) => ({ Component: m.Research }));
+const marketPage = () => import("./pages/Market").then((m) => ({ Component: m.Market }));
 
 const router = createBrowserRouter([
   {
@@ -41,6 +42,7 @@ const router = createBrowserRouter([
       { path: "trades", element: <Trades /> },
       { path: "watchlist", element: <Watchlist /> },
       { path: "research", lazy: researchPage },
+      { path: "market", lazy: marketPage },
       { path: "people", element: <People /> },
       { path: "pledges", element: <Pledges /> },
       { path: "people/:slug", element: <Person /> },
