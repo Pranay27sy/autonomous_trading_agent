@@ -1,6 +1,7 @@
 import type { Trade } from "./api";
 import type { Column } from "./components/DataTable";
 import { ConvictionBadge, SideChip, StockLink } from "./components/ui";
+import { PersonLink } from "./pages/People";
 import { day, inr, integer, pct, percentPoints, signClass } from "./format";
 
 type ReturnKey = `ret_${1 | 5 | 20 | 60 | 120}` | `exc_${1 | 5 | 20 | 60 | 120}`;
@@ -34,7 +35,7 @@ const all: Record<string, Column<Trade>> = {
     ),
   },
   company: { key: "company", label: "Company", className: "clip", render: (t) => <span className="muted" title={t.company ?? ""}>{t.company}</span> },
-  person: { key: "person", label: "Promoter", className: "clip", render: (t) => <span title={t.person ?? ""}>{t.person}</span> },
+  person: { key: "person", label: "Promoter", className: "clip", render: (t) => <PersonLink name={t.person} /> },
   mode: { key: "mode", label: "Mode", render: (t) => <span className="muted">{t.mode}</span> },
   value: { key: "value", label: "Value", align: "right", render: (t) => inr(t.value) },
   conviction: {

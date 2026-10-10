@@ -282,6 +282,52 @@ export interface Sectors {
   classified_share: number | null;
 }
 
+interface TrackRecord {
+  exc_20: number | null;
+  hit_20: number | null;
+  n_20: number;
+  exc_60: number | null;
+  hit_60: number | null;
+  n_60: number;
+  exc_120: number | null;
+  hit_120: number | null;
+  n_120: number;
+}
+
+export interface PersonRow extends TrackRecord {
+  slug: string;
+  name: string;
+  companies: number;
+  top_company: string | null;
+  trades: number;
+  buys: number;
+  sells: number;
+  buy_value: number;
+  net_value: number;
+  last_trade: string | null;
+}
+
+export interface PersonProfile {
+  slug: string;
+  name: string;
+  aliases: string[];
+  category: string | null;
+  trades: number;
+  buy_value: number;
+  sell_value: number;
+  track: TrackRecord;
+  companies: {
+    symbol: string;
+    company: string | null;
+    trades: number;
+    net_value: number;
+    first: string;
+    last: string;
+    holding_after_pct: number | null;
+  }[];
+  trades_list: Trade[];
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -332,6 +378,9 @@ export const api = {
       method: "DELETE",
     }),
   sectors: (f: Filters) => request<Sectors>(withFilters("/api/sectors", f)),
+  people: (f: Filters) => request<PersonRow[]>(withFilters("/api/people", f)),
+  person: (slug: string, f: Filters) =>
+    request<PersonProfile>(withFilters(`/api/people/${encodeURIComponent(slug)}`, f)),
   backtest: (r: BacktestRule, f: Filters) => {
     const p = new URLSearchParams({
       side: r.side,

@@ -5,6 +5,7 @@ Everything here is plain pandas, independent of the web framework.
 from __future__ import annotations
 
 import math
+import re
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -309,4 +310,85 @@ def sectors(view: pd.DataFrame) -> dict:
         "caps": sorted(by_cap, key=lambda r: order.index(r["bucket"])),
         # Share of trades with a known sector; low until company info is loaded.
         "classified_share": float((v["sector"] != "Unclassified").mean()),
+    }
+
+
+# --- promoter profiles ----------------------------------------------------------
+SHRINK = 10  # pseudo-observations at zero excess when ranking track records
+def person_slug(name: Any) -> str:
+    """URL-safe identity for a promoter name; filings vary in case and punctuation."""
+    text = re.sub(r"[^0-9a-z]+", "-", str(name or "").casefold())
+    return text.strip("-")
+
+
+def _track(events: pd.DataFrame) -> dict:
+    """How stocks did vs Nifty after these buys."""
+    buys = events[events["direction"] == "buy"]
+    out = {}
+    for h in (20, 60, 120):
+        exc = buys[f"exc_{h}"].dropna() if f"exc_{h}" in buys else pd.Series(dtype=float)
+        out[f"exc_{h}"] = float(exc.mean()) if len(exc) else None
+        out[f"hit_{h}"] = float((exc > 0).mean()) if len(exc) else None
+        out[f"n_{h}"] = int(len(exc))
+    return out
+
+
+def people(view: pd.DataFrame, min_scored: int = 3, limit: int = 300) -> list[dict]:
+    """Promoters with their activity and track record after buys.
+
+    Ranked by average excess return 60 days after their buys, shrunk toward
+    zero for small samples (x n/(n+SHRINK)), so three lucky trades don't top a
+    long consistent record. People with fewer than `min_scored` buys old enough
+    to score follow, by value bought.
+    """
+    if view.empty:
+        return []
+    v = view.assign(slug=view["person"].map(person_slug))
+    v = v[v["slug"] != ""]
+    rows = []
+    for slug, g in v.groupby("slug"):
+        track = _track(g)
+        rows.append({
+            "slug": slug,
+            "name": clean(g["person"].mode().iloc[0]),
+            "companies": int(g["symbol"].nunique()),
+            "top_company": clean(g.groupby("symbol")["value"].sum().idxmax()),
+            "trades": len(g),
+            "buys": int((g["direction"] == "buy").sum()),
+            "sells": int((g["direction"] == "sell").sum()),
+            "buy_value": float(g.loc[g["direction"] == "buy", "value"].sum()),
+            "net_value": float(g["signed_value"].sum()),
+            "last_trade": clean(g["event_date"].max()),
+            **track,
+        })
+    ranked = [r for r in rows if r["n_60"] >= min_scored]
+    rest = [r for r in rows if r["n_60"] < min_scored]
+    ranked.sort(key=lambda r: -(r["exc_60"] or 0) * r["n_60"] / (r["n_60"] + SHRINK))
+    rest.sort(key=lambda r: -r["buy_value"])
+    return (ranked + rest)[:limit]
+
+
+def person(events: pd.DataFrame, slug: str) -> dict | None:
+    e = events[events["person"].map(person_slug) == slug]
+    if e.empty:
+        return None
+    companies_ = []
+    for sym, g in e.groupby("symbol"):
+        companies_.append({"symbol": sym, "company": clean(g["company"].iloc[0]),
+                           "trades": len(g), "net_value": float(g["signed_value"].sum()),
+                           "first": clean(g["event_date"].min()), "last": clean(g["event_date"].max()),
+                           "holding_after_pct": clean(g.sort_values("event_date")["holding_after_pct"]
+                                                      .dropna().iloc[-1]
+                                                      if g["holding_after_pct"].notna().any() else None)})
+    return {
+        "slug": slug,
+        "name": clean(e["person"].mode().iloc[0]),
+        "aliases": sorted({str(p) for p in e["person"].dropna().unique()}),
+        "category": clean(e["category"].mode().iloc[0]) if "category" in e else None,
+        "trades": len(e),
+        "buy_value": float(e.loc[e["direction"] == "buy", "value"].sum()),
+        "sell_value": float(e.loc[e["direction"] == "sell", "value"].sum()),
+        "track": _track(e),
+        "companies": sorted(companies_, key=lambda c: -abs(c["net_value"])),
+        "trades_list": records(e.sort_values("event_date", ascending=False), TRADE_FIELDS),
     }

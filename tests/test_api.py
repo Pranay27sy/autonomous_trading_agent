@@ -258,3 +258,34 @@ def test_research_endpoints(client):
     assert {g["group"] for g in es["groups"]} <= {"Promoter buys", "Promoter sells"}
     again = client.get("/api/research/backtest", params={"hold_days": 20, "min_value": 0}).json()
     assert again == bt  # served from the cache
+
+
+def test_people_leaderboard_and_profile(client):
+    people = client.get("/api/people", params={**ALL, "min_scored": 1}).json()
+    ravi = next(p for p in people if p["slug"] == "ravi-kumar")
+    assert ravi["companies"] == 1 and ravi["buys"] == 1 and ravi["n_60"] == 1
+    assert people[0]["exc_60"] >= people[1]["exc_60"]  # ranked by track record
+    prof = client.get("/api/people/ravi-kumar", params=ALL).json()
+    assert prof["name"] == "Ravi Kumar" and prof["companies"][0]["symbol"] == "ABCLTD"
+    assert [t["person"] for t in prof["trades_list"]] == ["Ravi Kumar"]
+    assert client.get("/api/people/nobody", params=ALL).status_code == 404
+    assert client.get("/api/people/BAD SLUG!").status_code == 422
+
+
+def test_person_slug_merges_spelling_variants():
+    from promoter_tracker.service import person_slug
+    assert person_slug("Ravi  Kumar.") == person_slug("RAVI KUMAR") == "ravi-kumar"
+
+
+def test_track_record_ranking_prefers_consistency_over_small_lucky_samples():
+    import pandas as pd
+
+    from promoter_tracker import service
+
+    def buys(name, n, exc):
+        return [{"person": name, "symbol": name, "company": name, "direction": "buy", "value": 1e7,
+                 "signed_value": 1e7, "event_date": pd.Timestamp("2024-01-01"),
+                 "exc_20": exc, "exc_60": exc, "exc_120": exc} for _ in range(n)]
+
+    view = pd.DataFrame(buys("Lucky", 3, 0.5) + buys("Steady", 40, 0.2))
+    assert [p["name"] for p in service.people(view)] == ["Steady", "Lucky"]

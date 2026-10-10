@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Path as PathParam
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -298,6 +299,23 @@ def create_app(settings: Settings | None = None,
             return research.event_study(events, closes, bench, groups=groups)
 
         return cached(request, ("event_study", groups, market_only, basis), run)
+
+    @app.get("/api/people")
+    def people(request: Request, f: F,
+               min_scored: Annotated[int, Query(ge=1, le=50)] = 3) -> list[dict]:
+        _, view = events_for(request, f)
+        return service.people(view, min_scored)
+
+    @app.get("/api/people/{slug}")
+    def person(request: Request, slug: Annotated[str, PathParam(pattern=r"^[0-9a-z-]{1,200}$")],
+               f: F) -> dict:
+        events, _ = events_for(request, f)
+        if f.exclude_transfers and not events.empty:
+            events = events[~events["internal_transfer"]]
+        out = service.person(events, slug) if not events.empty else None
+        if out is None:
+            raise HTTPException(404, "No promoter trades for this person")
+        return out
 
     @app.get("/api/sectors")
     def sectors(request: Request, f: F) -> dict:
