@@ -21,7 +21,7 @@ from typing import Callable
 
 from filelock import FileLock, Timeout
 
-from . import analysis
+from . import alerts, analysis, notify
 from .config import configure_logging, load_settings
 from .nse_client import NSEClient
 from .prices import BENCHMARK, download_bars, nse_ticker, refresh_prices
@@ -48,6 +48,7 @@ class RefreshResult:
     fetched_to: date
     new_trades: int = 0
     price_rows: int = 0
+    alerts: int = 0
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -64,8 +65,11 @@ def disclosure_window(last: str | None, today: date, backfill_days: int) -> tupl
 def refresh_all(store: Store, backfill_days: int = 365, client: NSEClient | None = None,
                 downloader=download_bars, today: date | None = None,
                 progress: Callable[[str], None] = lambda msg: None,
-                since: date | None = None) -> RefreshResult:
+                since: date | None = None,
+                channels: list[notify.Channel] | None = None) -> RefreshResult:
     """since forces the disclosure fetch to start there, e.g. to re-pull filings that failed.
+
+    New alerts are sent on `channels` (default: those configured in the environment).
 
     Raises RefreshInProgress if another process is refreshing the same database:
     two refreshes at once would double NSE's request rate and get both blocked.
@@ -77,12 +81,14 @@ def refresh_all(store: Store, backfill_days: int = 365, client: NSEClient | None
     except Timeout:
         raise RefreshInProgress("A refresh is already running") from None
     try:
-        return _refresh_all(store, backfill_days, client, downloader, today, progress, since)
+        return _refresh_all(store, backfill_days, client, downloader, today, progress, since,
+                            channels)
     finally:
         lock.release()
 
 
-def _refresh_all(store, backfill_days, client, downloader, today, progress, since) -> RefreshResult:
+def _refresh_all(store, backfill_days, client, downloader, today, progress, since,
+                 channels) -> RefreshResult:
     today = today or date.today()
     start, end = disclosure_window(store.last_disclosure_date(), today, backfill_days)
     if since:
@@ -140,9 +146,29 @@ def _refresh_all(store, backfill_days, client, downloader, today, progress, sinc
         progress(f"Prices {i}/{len(tickers)}: {ticker}")
         result.price_rows += refresh_prices(store, ticker, downloader=downloader)
 
+    _raise_alerts(store, result, progress, channels)
     if not result.errors:
         store.mark_refreshed()
     return result
+
+
+def _raise_alerts(store: Store, result: RefreshResult, progress, channels) -> None:
+    # Alerts are a side effect of the refresh: a failure here is a warning, not an error.
+    try:
+        new = alerts.scan(store)
+        result.alerts = len(new)
+        if not new:
+            return
+        progress(f"{len(new)} new alert{'s' if len(new) != 1 else ''}")
+        settings = load_settings()
+        channels = notify.channels_from(settings) if channels is None else channels
+        failed = notify.send(new, channels, settings.public_url)
+        if channels and len(failed) < len(channels):
+            store.mark_alerts_notified([a["id"] for a in new])
+        result.warnings.extend(failed)
+    except Exception as err:
+        log.exception("Alert scan failed")
+        result.warnings.append(f"Alerts: {err}")
 
 
 def run_once(store: Store, backfill_days: int, since: date | None = None) -> int:
@@ -152,8 +178,8 @@ def run_once(store: Store, backfill_days: int, since: date | None = None) -> int
     except RefreshInProgress:
         log.warning("Another refresh is already running on %s; skipping this one", store.path)
         return EXIT_BUSY
-    log.info("Done: %d new disclosures, %d price rows, %d errors",
-             res.new_trades, res.price_rows, len(res.errors))
+    log.info("Done: %d new disclosures, %d price rows, %d alerts, %d errors",
+             res.new_trades, res.price_rows, res.alerts, len(res.errors))
     for w in res.warnings:
         log.warning(w)
     for e in res.errors:

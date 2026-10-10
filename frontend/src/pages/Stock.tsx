@@ -5,6 +5,7 @@ import { api, ApiError, type StockDetail, type StockListItem } from "../api";
 import { DataTable } from "../components/DataTable";
 import { PriceChart, type Interval } from "../components/PriceChart";
 import { Card, Empty, ErrorBox, Segmented, Skeleton } from "../components/ui";
+import { WatchButton } from "../components/watch";
 import { useFilters } from "../filters";
 import { day, inr, pct, percentPoints, price } from "../format";
 import { tradeColumns } from "../tradeColumns";
@@ -74,6 +75,7 @@ function StockView({ symbol, stocks }: { symbol: string; stocks: StockListItem[]
           <div className="page-head">
             <h1>{q.data.company ?? symbol}</h1>
             <span className="muted mono">NSE: {symbol}</span>
+            <WatchButton symbol={symbol} />
           </div>
           <Kpis d={q.data} />
           <Card

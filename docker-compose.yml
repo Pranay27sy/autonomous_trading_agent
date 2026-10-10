@@ -5,6 +5,9 @@ services:
     build: .
     ports:
       - "8000:8000"
+    env_file:
+      - path: .env  # alert channels (see .env.example); optional
+        required: false
     environment:
       # The refresher keeps data fresh; the app only refreshes when asked to.
       PROMOTER_AUTO_REFRESH: "0"
@@ -17,6 +20,9 @@ services:
     command: ["promoter-refresh", "--every-hours", "6", "--backfill-days", "365"]
     healthcheck:
       disable: true
+    env_file:
+      - path: .env  # the refresher is what sends alerts
+        required: false
     environment:
       PROMOTER_LOG_FILE: /data/logs/refresh.log
     volumes:

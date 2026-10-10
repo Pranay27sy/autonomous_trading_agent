@@ -210,3 +210,35 @@ def stock(events: pd.DataFrame, symbol: str, sides: tuple[str, ...], bars: pd.Da
                        index=False, name=None), strict=True)],
         "trades": records(sev, TRADE_FIELDS),
     }
+
+
+def watchlist(events: pd.DataFrame, watched: list[dict], sides: tuple[str, ...],
+              closes) -> list[dict]:
+    """Each watched stock with its latest promoter trade, recent flow and price.
+
+    closes(symbol) -> pd.Series of daily closes.
+    """
+    out = []
+    end = events["event_date"].max() if not events.empty else None
+    for w in watched:
+        sym = w["symbol"]
+        sev = events[(events["symbol"] == sym) & events["direction"].isin(sides)] \
+            if not events.empty else events
+        recent = sev[sev["event_date"] >= end - pd.Timedelta(days=90)] if len(sev) else sev
+        last = sev.sort_values("event_date").iloc[-1] if len(sev) else None
+        px = closes(sym)
+        month_ago = px.asof(px.index[-1] - pd.Timedelta(days=30)) if len(px) else None
+        out.append({
+            "symbol": sym,
+            "company": clean(sev["company"].iloc[0]) if len(sev) else None,
+            "added_at": w["added_at"],
+            "last_trade": None if last is None else {
+                "event_date": clean(last["event_date"]), "direction": last["direction"],
+                "value": clean(last["value"]), "person": clean(last["person"])},
+            "net_value_90d": float(recent["signed_value"].sum()) if len(recent) else 0.0,
+            "trades_90d": len(recent),
+            "last_close": clean(px.iloc[-1]) if len(px) else None,
+            "change_1m": clean(px.iloc[-1] / month_ago - 1)
+            if len(px) and month_ago is not None and pd.notna(month_ago) else None,
+        })
+    return out

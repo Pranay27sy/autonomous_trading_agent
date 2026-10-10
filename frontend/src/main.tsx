@@ -13,8 +13,10 @@ import { createBrowserRouter, Link, RouterProvider } from "react-router";
 import { ApiError } from "./api";
 import { Layout } from "./components/Layout";
 import { Empty } from "./components/ui";
+import { Alerts } from "./pages/Alerts";
 import { Overview } from "./pages/Overview";
 import { Trades } from "./pages/Trades";
+import { Watchlist } from "./pages/Watchlist";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -34,6 +36,8 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Overview /> },
       { path: "trades", element: <Trades /> },
+      { path: "watchlist", element: <Watchlist /> },
+      { path: "alerts", element: <Alerts /> },
       // The stock page carries the charting library; load it on first visit.
       { path: "stock", lazy: stockPage },
       { path: "stock/:symbol", lazy: stockPage },
