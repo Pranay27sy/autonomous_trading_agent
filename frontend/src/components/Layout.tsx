@@ -28,6 +28,7 @@ export function Layout() {
           <NavLink to={{ pathname: "/people", search }}>Promoters</NavLink>
           <NavLink to={{ pathname: "/pledges", search }}>Pledges</NavLink>
           <NavLink to={{ pathname: "/research", search }}>Research</NavLink>
+          <NavLink to={{ pathname: "/compare", search }}>Compare</NavLink>
           <NavLink to={{ pathname: "/watchlist", search }}>Watchlist</NavLink>
         </nav>
         <div className="topbar-right">

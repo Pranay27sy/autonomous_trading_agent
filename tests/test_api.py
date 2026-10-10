@@ -317,3 +317,13 @@ def test_market_flow(client):
     assert jan14["stocks_net_buying"] == 1 and jan14["nifty"] > 0
     assert {d["day"] for d in body["daily"]} >= {"2024-01-05", "2024-01-12"}
     assert body["totals"]["weeks"] == len(body["weekly"])
+
+
+def test_compare(client):
+    body = client.get("/api/compare", params={**ALL, "symbols": "abcltd,XYZIND", "days": 3650}).json()
+    a, x = body["stocks"]
+    assert a["symbol"] == "ABCLTD" and a["path"][0]["value"] == 0
+    assert a["stats"]["buys"] == 2 and x["stats"]["sells"] == 1
+    assert {t["direction"] for t in a["trades"]} == {"buy"}
+    assert client.get("/api/compare", params={"symbols": "A,B,C,D,E"}).status_code == 422
+    assert client.get("/api/compare", params={"symbols": "<x>"}).status_code == 422

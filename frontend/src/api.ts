@@ -384,6 +384,23 @@ export interface MarketFlow {
   totals: { weeks: number; net_buying_weeks: number; avg_breadth: number; avg_sellers: number } | null;
 }
 
+export interface CompareStock {
+  symbol: string;
+  company: string | null;
+  sector: string | null;
+  path: { time: string; value: number }[];
+  trades: { time: string; direction: Side; value: number | null; person: string | null; conviction: number | null }[];
+  stats: {
+    return: number;
+    volatility: number | null;
+    max_drawdown: number;
+    net_value: number;
+    buys: number;
+    sells: number;
+    max_conviction: number | null;
+  } | null;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -435,6 +452,10 @@ export const api = {
     }),
   sectors: (f: Filters) => request<Sectors>(withFilters("/api/sectors", f)),
   market: (f: Filters) => request<MarketFlow>(withFilters("/api/market", f)),
+  compare: (symbols: string[], days: number | null, f: Filters) =>
+    request<{ start: string; end: string; stocks: CompareStock[] }>(
+      withFilters("/api/compare", { ...f, period: "All" }, { symbols: symbols.join(","), ...(days ? { days: String(days) } : {}) }),
+    ),
   pledges: (period: string) => request<PledgeSummary>(`/api/pledges?period=${encodeURIComponent(period)}`),
   people: (f: Filters) => request<PersonRow[]>(withFilters("/api/people", f)),
   person: (slug: string, f: Filters) =>

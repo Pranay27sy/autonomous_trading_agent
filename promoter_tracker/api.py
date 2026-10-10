@@ -36,6 +36,7 @@ log = logging.getLogger(__name__)
 
 _FROM_SETTINGS = Path("<settings>")
 SYMBOL_RE = re.compile(r"^[A-Z0-9&.\-]{1,20}$")
+COMPARE_RE = r"^[A-Za-z0-9&.\-]{1,20}(,[A-Za-z0-9&.\-]{1,20}){0,3}$"  # 1-4 symbols
 TEST_ALERT_COOLDOWN = 30  # seconds between test messages
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -342,6 +343,17 @@ def create_app(settings: Settings | None = None,
         if out is None:
             raise HTTPException(404, "No promoter trades for this person")
         return out
+
+    @app.get("/api/compare")
+    def compare(request: Request, f: F,
+                symbols: Annotated[str, Query(pattern=COMPARE_RE)],
+                days: Annotated[int | None, Query(ge=30, le=3650)] = 365) -> dict:
+        syms = list(dict.fromkeys(s.upper() for s in symbols.split(",")))
+        events, _ = events_for(request, f)
+        if f.exclude_transfers and not events.empty:
+            events = events[~events["internal_transfer"]]
+        store: Store = request.app.state.store
+        return service.compare(events, syms, lambda s: store.load_prices(nse_ticker(s)), days)
 
     @app.get("/api/market")
     def market(request: Request, f: F) -> dict:

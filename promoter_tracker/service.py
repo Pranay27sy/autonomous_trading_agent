@@ -450,3 +450,53 @@ def market(view: pd.DataFrame, bench: pd.Series) -> dict:
                    "avg_breadth": float(weekly["stocks_net_buying"].mean()),
                    "avg_sellers": float(weekly["stocks_net_selling"].mean())},
     }
+
+
+# --- compare ------------------------------------------------------------------------
+def compare(events: pd.DataFrame, symbols: list[str], closes, days: int | None) -> dict:
+    """Rebased price paths, promoter trades and stats for a few stocks side by side.
+
+    days: look-back in calendar days from the latest common price date (None = all).
+    """
+    series = {s: closes(s).dropna().sort_index() for s in symbols}
+    have = {s: p for s, p in series.items() if len(p)}
+    if not have:
+        return {"start": None, "stocks": []}
+    end = min(p.index[-1] for p in have.values())
+    start = max(p.index[0] for p in have.values())
+    if days is not None:
+        start = max(start, end - pd.Timedelta(days=days))
+    out = []
+    for sym in symbols:
+        p = have.get(sym)
+        sev = events[events["symbol"] == sym] if not events.empty else events
+        sev = sev[(sev["event_date"] >= start) & (sev["event_date"] <= end)] if len(sev) else sev
+        row = {"symbol": sym,
+               "company": clean(sev["company"].iloc[0]) if len(sev)
+               else clean(events.loc[events["symbol"] == sym, "company"].iloc[0])
+               if not events.empty and (events["symbol"] == sym).any() else None,
+               "sector": clean(sev["sector"].iloc[0]) if len(sev) and "sector" in sev else None,
+               "path": [], "trades": []}
+        if p is None:
+            out.append({**row, "stats": None})
+            continue
+        w = p[(p.index >= start) & (p.index <= end)]
+        rets = w.pct_change().dropna()
+        row["path"] = [{"time": d.date().isoformat(), "value": round(float(v / w.iloc[0] - 1), 5)}
+                       for d, v in w.items()]
+        row["trades"] = [{"time": clean(t["event_date"]), "direction": t["direction"],
+                          "value": clean(t["value"]), "person": clean(t["person"]),
+                          "conviction": clean(t.get("conviction"))} for _, t in sev.iterrows()]
+        buys = sev[sev["direction"] == "buy"] if len(sev) else sev
+        row["stats"] = {
+            "return": float(w.iloc[-1] / w.iloc[0] - 1),
+            "volatility": float(rets.std() * np.sqrt(252)) if len(rets) > 1 else None,
+            "max_drawdown": float((w / w.cummax() - 1).min()),
+            "net_value": float(sev["signed_value"].sum()) if len(sev) else 0.0,
+            "buys": len(buys),
+            "sells": len(sev) - len(buys),
+            "max_conviction": clean(buys["conviction"].max()) if len(buys) and "conviction" in buys
+            else None,
+        }
+        out.append(row)
+    return {"start": start.date().isoformat(), "end": end.date().isoformat(), "stocks": out}
