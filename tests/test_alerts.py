@@ -191,3 +191,24 @@ def test_high_conviction_rule(store):
     [a] = alerts.scan(store)
     assert a["kind"] == "conviction" and "(score " in a["title"]
     assert "raised their stake by 1.50% of the company" in a["detail"]
+
+
+def test_pledge_invocation_alerts_anywhere_and_watched_pledges(store):
+    alerts.scan(store)
+    store.watch("XYZIND")
+    base = {"category": "Promoter Group", "security_type": "Equity Shares", "value": 47.0,
+            "holding_before_pct": 5.0, "holding_after_pct": 5.0, "trade_from": "2024-03-05",
+            "trade_to": "2024-03-05", "intimation_date": "2024-03-05",
+            "disclosure_date": "2024-03-05", "disclosure_estimated": 0}
+    store.upsert_trades([
+        {**base, "symbol": "NEWCO", "company": "NewCo", "person": "Lender Victim",
+         "quantity": 5e5, "txn_type": "Pledge Invoke", "mode": "Invocation of pledge"},
+        {**base, "symbol": "XYZIND", "company": "XYZ", "person": "Owner",
+         "quantity": 1e5, "txn_type": "Pledge", "mode": "Pledge Creation"},
+        {**base, "symbol": "OTHER", "company": "Other", "person": "Someone",
+         "quantity": 1e5, "txn_type": "Pledge", "mode": "Pledge Creation"},  # not watched: no alert
+    ])
+    titles = sorted(a["title"] for a in alerts.scan(store))
+    assert len(titles) == 2
+    assert titles[0].startswith("NEWCO: lender invoked pledged promoter shares (500,000 shares")
+    assert titles[1].startswith("XYZIND: promoter pledged shares")

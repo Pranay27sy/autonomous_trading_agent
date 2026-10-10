@@ -139,8 +139,10 @@ def _refresh_all(store, backfill_days, client, downloader, today, progress, sinc
         names = ", ".join(f"{f.get('symbol')} ({f.get('broadcastDateTime', '?')})" for f in missing[:5])
         result.warnings.append(f"NSE no longer has {len(missing)} filing(s), skipped: {names}")
 
-    events = analysis.promoter_events(store.load_trades(), market_only=False)
-    symbols = sorted(set(events["symbol"]))
+    # Every stock with any promoter filing, so pledge-only companies get prices too.
+    trades = store.load_trades()
+    symbols = sorted(set(trades.loc[trades["category"].map(analysis.is_promoter), "symbol"])) \
+        if not trades.empty else []
     tickers = [BENCHMARK] + [nse_ticker(s) for s in symbols]
     for i, ticker in enumerate(tickers, 1):
         progress(f"Prices {i}/{len(tickers)}: {ticker}")

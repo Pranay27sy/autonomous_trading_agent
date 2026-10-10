@@ -131,6 +131,7 @@ export interface StockDetail {
   };
   prices: Bar[];
   trades: Trade[];
+  pledges: PledgeEvent[];
 }
 
 export interface RefreshStatus {
@@ -168,7 +169,7 @@ export interface WatchItem {
   change_1m: number | null;
 }
 
-export type AlertKind = "watchlist" | "conviction" | "big_buy" | "big_sell" | "cluster";
+export type AlertKind = "watchlist" | "conviction" | "big_buy" | "big_sell" | "cluster" | "pledge";
 
 export interface Alert {
   id: number;
@@ -194,6 +195,7 @@ export interface AlertRules {
   cluster_window_days: number;
   market_only: boolean;
   min_conviction: number | null;
+  pledge_invocations: boolean;
 }
 
 export interface AlertSettings {
@@ -328,6 +330,43 @@ export interface PersonProfile {
   trades_list: Trade[];
 }
 
+export interface PledgeEvent {
+  symbol: string;
+  company: string | null;
+  person: string | null;
+  kind: "created" | "released" | "invoked";
+  quantity: number | null;
+  /** quantity × that day's close (the filed value is unreliable) */
+  value: number | null;
+  event_date: string;
+  trade_key: string;
+}
+
+export interface PledgeCompany {
+  symbol: string;
+  company: string | null;
+  events: number;
+  promoters: number;
+  created_shares: number;
+  released_shares: number;
+  invoked_shares: number;
+  created_value: number;
+  released_value: number;
+  invoked_value: number;
+  net_shares: number;
+  net_pct: number | null;
+  invocations: number;
+  last_event: string;
+  last_kind: PledgeEvent["kind"];
+  risk: "high" | "rising" | "flat" | "easing";
+}
+
+export interface PledgeSummary {
+  totals: Record<PledgeEvent["kind"], { events: number; value: number; companies: number }>;
+  companies: PledgeCompany[];
+  events: PledgeEvent[];
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -378,6 +417,7 @@ export const api = {
       method: "DELETE",
     }),
   sectors: (f: Filters) => request<Sectors>(withFilters("/api/sectors", f)),
+  pledges: (period: string) => request<PledgeSummary>(`/api/pledges?period=${encodeURIComponent(period)}`),
   people: (f: Filters) => request<PersonRow[]>(withFilters("/api/people", f)),
   person: (slug: string, f: Filters) =>
     request<PersonProfile>(withFilters(`/api/people/${encodeURIComponent(slug)}`, f)),

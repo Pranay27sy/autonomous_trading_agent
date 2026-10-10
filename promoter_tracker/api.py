@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Literal
 
+import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi import Path as PathParam
 from fastapi.middleware.gzip import GZipMiddleware
@@ -25,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import alerts as alert_rules
-from . import notify, research, service
+from . import notify, pledges, research, service
 from .config import Settings, configure_logging, load_settings
 from .prices import BENCHMARK, nse_ticker
 from .refresh import RefreshInProgress, refresh_all
@@ -47,6 +48,7 @@ class AlertSettingsBody(BaseModel):
     cluster_window_days: int = Field(default=30, ge=1, le=365)
     market_only: bool = True
     min_conviction: int | None = Field(default=None, ge=0, le=100)
+    pledge_invocations: bool = True
 
 
 class MarkRead(BaseModel):
@@ -300,6 +302,30 @@ def create_app(settings: Settings | None = None,
 
         return cached(request, ("event_study", groups, market_only, basis), run)
 
+    def pledge_events(request: Request):
+        store: Store = request.app.state.store
+        return cached(request, ("pledge_events",), lambda: pledges.pledge_events(
+            store.load_trades(), lambda s: store.load_prices(nse_ticker(s))))
+
+    @app.get("/api/pledges")
+    def pledge_summary(request: Request,
+                       period: Literal["1M", "3M", "6M", "1Y", "3Y", "All"] = "1Y") -> dict:
+        events = pledge_events(request)
+        if not events.empty and service.PERIODS[period] is not None:
+            start = events["event_date"].max() - pd.Timedelta(days=service.PERIODS[period])
+            events = events[events["event_date"] >= start]
+        info = request.app.state.store.company_info()
+        shares = info["shares_outstanding"] if not info.empty else None
+        totals = {k: {"events": int((events["kind"] == k).sum()),
+                      "value": float(events.loc[events["kind"] == k, "value"].fillna(0).sum()),
+                      "companies": int(events.loc[events["kind"] == k, "symbol"].nunique())}
+                  for k in pledges.KINDS}
+        return service.clean_tree({
+            "totals": totals,
+            "companies": pledges.summarize(events, shares),
+            "events": events.head(300).to_dict("records"),
+        })
+
     @app.get("/api/people")
     def people(request: Request, f: F,
                min_scored: Annotated[int, Query(ge=1, le=50)] = 3) -> list[dict]:
@@ -336,8 +362,11 @@ def create_app(settings: Settings | None = None,
         if events.empty or symbol not in set(events["symbol"]):
             raise HTTPException(404, f"No promoter trades for {symbol}")
         bars = request.app.state.store.load_bars(nse_ticker(symbol))
-        return service.stock(events, symbol, f.sides or ("buy", "sell"), bars,
-                             f.exclude_transfers)
+        out = service.stock(events, symbol, f.sides or ("buy", "sell"), bars, f.exclude_transfers)
+        pe = pledge_events(request)
+        out["pledges"] = service.clean_tree(
+            pe[pe["symbol"] == symbol].to_dict("records") if not pe.empty else [])
+        return out
 
     def known_symbol(request: Request, symbol: str) -> str:
         symbol = symbol.upper()

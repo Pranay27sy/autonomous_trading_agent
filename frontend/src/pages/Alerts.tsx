@@ -178,6 +178,11 @@ function RulesCard() {
           )}
         </div>
         <Switch
+          label="Lender invoked pledged promoter shares, any stock (watched stocks also alert on new pledges)"
+          checked={rules.pledge_invocations}
+          onChange={(v) => set({ pledge_invocations: v })}
+        />
+        <Switch
           label="Open-market trades only (ignore gifts, pledges, ESOPs…)"
           checked={rules.market_only}
           onChange={(v) => set({ market_only: v })}

@@ -16,6 +16,7 @@ import { Empty } from "./components/ui";
 import { Alerts } from "./pages/Alerts";
 import { Overview } from "./pages/Overview";
 import { People, Person } from "./pages/People";
+import { Pledges } from "./pages/Pledges";
 import { Trades } from "./pages/Trades";
 import { Watchlist } from "./pages/Watchlist";
 
@@ -41,6 +42,7 @@ const router = createBrowserRouter([
       { path: "watchlist", element: <Watchlist /> },
       { path: "research", lazy: researchPage },
       { path: "people", element: <People /> },
+      { path: "pledges", element: <Pledges /> },
       { path: "people/:slug", element: <Person /> },
       { path: "alerts", element: <Alerts /> },
       // The stock page carries the charting library; load it on first visit.

@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, fields
 
 import pandas as pd
 
-from . import analysis, conviction
+from . import analysis, conviction, pledges
 from .prices import nse_ticker
 from .store import Store
 
@@ -37,6 +37,8 @@ class AlertSettings:
     cluster_window_days: int = 30
     market_only: bool = True               # ignore gifts, pledges, ESOPs, ...
     min_conviction: int | None = None      # high-conviction buy in any stock; None = off
+    pledge_invocations: bool = True        # lender invoked pledged promoter shares (any stock);
+                                           # watched stocks also alert on new pledges
 
     @classmethod
     def load(cls, store: Store) -> AlertSettings:
@@ -156,6 +158,32 @@ def evaluate(new_events: pd.DataFrame, all_events: pd.DataFrame, watchlist: set[
     return [a for a in out if not (a["kind"] == "big_buy" and a["symbol"] in clustered)]
 
 
+def pledge_alerts(new_trades: pd.DataFrame, watchlist: set[str], s: AlertSettings,
+                  closes) -> list[dict]:
+    """Invocations in any stock (if enabled); any pledge event in a watched stock."""
+    pe = pledges.pledge_events(new_trades, closes)
+    pe = pe[(s.pledge_invocations & (pe["kind"] == "invoked")) | pe["symbol"].isin(watchlist)] \
+        if not pe.empty else pe
+    out = []
+    for (sym, kind), g in pe.groupby(["symbol", "kind"], sort=False):
+        verb = {"invoked": "lender invoked pledged promoter shares",
+                "created": "promoter pledged shares", "released": "promoter pledge released"}[kind]
+        people = ", ".join(dict.fromkeys(g["person"].fillna("Promoter")))
+        out.append({
+            "kind": "pledge",
+            "dedup_key": hashlib.sha1("|".join(sorted(g["trade_key"])).encode(),
+                                      usedforsecurity=False).hexdigest(),
+            "symbol": sym, "company": g["company"].iloc[0],
+            "direction": "sell" if kind != "released" else "buy",
+            "value": float(g["value"].fillna(0).sum()) or None,
+            "event_date": pd.Timestamp(g["event_date"].max()).date().isoformat(),
+            "title": f"{sym}: {verb} ({g['quantity'].fillna(0).sum():,.0f} shares, "
+                     f"~{inr(g['value'].fillna(0).sum())})",
+            "detail": f"{people} · disclosed {_day(g['event_date'].max())}",
+        })
+    return out
+
+
 def scan(store: Store) -> list[dict]:
     """Raise alerts for trades stored since the last scan. Returns the new alerts."""
     mark = store.get_meta(SCAN_MARK)
@@ -177,8 +205,9 @@ def scan(store: Store) -> list[dict]:
                                                lambda sym: store.load_bars(nse_ticker(sym)))
     new_events = all_events[all_events["trade_key"].isin(set(new["trade_key"]))]
     watch = {w["symbol"] for w in store.watchlist()}
-    added = store.add_alerts(evaluate(new_events, all_events, watch, s)) \
-        if not new_events.empty else []
+    raised = evaluate(new_events, all_events, watch, s) if not new_events.empty else []
+    raised += pledge_alerts(new, watch, s, lambda sym: store.load_prices(nse_ticker(sym)))
+    added = store.add_alerts(raised)
     store.set_meta(SCAN_MARK, latest or mark)
     if added:
         log.info("Raised %d alerts", len(added))

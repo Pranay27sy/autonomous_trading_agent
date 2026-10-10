@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS watchlist (
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
-    kind TEXT NOT NULL,          -- watchlist | conviction | big_buy | big_sell | cluster
+    kind TEXT NOT NULL,          -- watchlist | conviction | big_buy | big_sell | cluster | pledge
     dedup_key TEXT NOT NULL,     -- trade_key, or symbol:start for clusters
     symbol TEXT NOT NULL,
     company TEXT,

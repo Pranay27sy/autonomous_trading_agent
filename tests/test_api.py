@@ -289,3 +289,21 @@ def test_track_record_ranking_prefers_consistency_over_small_lucky_samples():
 
     view = pd.DataFrame(buys("Lucky", 3, 0.5) + buys("Steady", 40, 0.2))
     assert [p["name"] for p in service.people(view)] == ["Steady", "Lucky"]
+
+
+def test_pledges_endpoint_and_stock_pledges(tmp_path):
+    db = tmp_path / "t.db"
+    seed(db)
+    store = Store(db)
+    store.upsert_trades([{"symbol": "ABCLTD", "company": "ABC Limited", "person": "Ravi Kumar",
+                          "category": "Promoters", "quantity": 1000.0, "value": 47.0,
+                          "txn_type": "Pledge Invoke", "mode": "Invocation of pledge",
+                          "disclosure_date": "2024-02-01", "trade_to": "2024-02-01"}])
+    store.mark_refreshed()
+    store.close()
+    with TestClient(api.create_app(Settings(db_path=db, auto_refresh=False), frontend_dist=None)) as c:
+        body = c.get("/api/pledges", params={"period": "All"}).json()
+        assert body["totals"]["invoked"]["events"] == 1 and body["companies"][0]["risk"] == "high"
+        assert body["events"][0]["value"] > 1000  # valued at the close, not the filed 47
+        stock = c.get("/api/stocks/ABCLTD", params=ALL).json()
+        assert [p["kind"] for p in stock["pledges"]] == ["invoked"]

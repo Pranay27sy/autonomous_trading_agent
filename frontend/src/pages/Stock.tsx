@@ -6,6 +6,7 @@ import { DataTable } from "../components/DataTable";
 import { PriceChart, type Interval } from "../components/PriceChart";
 import { Card, Empty, ErrorBox, Segmented, Skeleton } from "../components/ui";
 import { WatchButton } from "../components/watch";
+import { StockPledges } from "./Pledges";
 import { useFilters } from "../filters";
 import { day, inr, pct, percentPoints, price } from "../format";
 import { tradeColumns } from "../tradeColumns";
@@ -127,6 +128,7 @@ function StockView({ symbol, stocks }: { symbol: string; stocks: StockListItem[]
               <p className="card-note">All of this stock's promoter trades in the cached history; the period filter doesn't apply here.</p>
             </Card>
           </div>
+          <StockPledges events={q.data.pledges} />
         </div>
       )}
     </>
