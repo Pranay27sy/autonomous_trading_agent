@@ -256,3 +256,14 @@ code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); pa
 .conviction-list li:last-child { border-bottom: 0; }
 .clip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .card.spaced { margin-bottom: 16px; }
+
+/* --- research ------------------------------------------------------------------ */
+.rule-grid { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: flex-end; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chip-toggle {
+  padding: 3px 9px; border-radius: 12px; border: 1px solid var(--line-2); background: transparent;
+  color: var(--muted); font-size: 12px; cursor: pointer;
+}
+.chip-toggle:hover { color: var(--text); }
+.chip-toggle.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }

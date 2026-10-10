@@ -247,3 +247,14 @@ def test_sectors_and_cap_buckets(tmp_path):
         assert [r["bucket"] for r in body["caps"]] == ["Large cap", "Small cap", "Unknown"]
         stock = c.get("/api/stocks/ABCLTD", params=ALL).json()
         assert stock["sector"] == "Industrials" and stock["cap_bucket"] == "Large cap"
+
+
+def test_research_endpoints(client):
+    bt = client.get("/api/research/backtest", params={"hold_days": 20, "min_value": 0}).json()
+    assert bt["stats"]["trades"] >= 1 and bt["equity"] and "excess" in bt["trades"][0]
+    assert client.get("/api/research/backtest", params={"hold_days": 0}).status_code == 422
+    assert client.get("/api/research/backtest", params={"start": "yesterday"}).status_code == 422
+    es = client.get("/api/research/event-study").json()
+    assert {g["group"] for g in es["groups"]} <= {"Promoter buys", "Promoter sells"}
+    again = client.get("/api/research/backtest", params={"hold_days": 20, "min_value": 0}).json()
+    assert again == bt  # served from the cache

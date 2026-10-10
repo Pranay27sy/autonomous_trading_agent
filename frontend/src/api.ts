@@ -202,6 +202,86 @@ export interface AlertSettings {
   channels: { telegram: boolean; email: boolean };
 }
 
+export interface BacktestRule {
+  side: Side;
+  hold_days: number;
+  min_value: number;
+  min_conviction: number | null;
+  min_stake_pct: number | null;
+  sectors: string[];
+  caps: string[];
+  start: string | null;
+  end: string | null;
+  one_per_stock_days: number;
+}
+
+export interface BacktestTrade {
+  symbol: string;
+  company: string | null;
+  person: string | null;
+  event_date: string;
+  entry: string;
+  exit: string;
+  value: number | null;
+  conviction: number | null;
+  return: number | null;
+  benchmark: number | null;
+  excess: number | null;
+}
+
+export interface BacktestResult {
+  stats: {
+    trades: number;
+    stocks?: number;
+    hit_rate?: number;
+    mean_return?: number;
+    median_return?: number;
+    mean_excess?: number | null;
+    median_excess?: number | null;
+    excess_ci95?: [number | null, number | null];
+    t_stat?: number | null;
+    best?: number;
+    worst?: number;
+    strategy_total?: number;
+    benchmark_total?: number;
+    strategy_cagr?: number;
+    benchmark_cagr?: number;
+    max_drawdown?: number;
+    benchmark_max_drawdown?: number;
+    time_invested?: number;
+    from?: string;
+    to?: string;
+  };
+  equity: { time: string; strategy: number; benchmark: number }[];
+  trades: BacktestTrade[];
+}
+
+export interface EventStudy {
+  before: number;
+  after: number;
+  groups: {
+    group: string;
+    events: number;
+    points: { day: number; mean: number | null; lo: number | null; hi: number | null; n: number }[];
+  }[];
+}
+
+export interface FlowRow {
+  buy_value: number;
+  sell_value: number;
+  net_value: number;
+  trades: number;
+  stocks: number;
+  stocks_net_buying: number;
+  top_buy: string | null;
+}
+
+export interface Sectors {
+  sectors: (FlowRow & { sector: string })[];
+  caps: (FlowRow & { bucket: string })[];
+  classified_share: number | null;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -251,6 +331,26 @@ export const api = {
     request<{ symbol: string; watching: boolean }>(`/api/watchlist/${encodeURIComponent(symbol)}`, {
       method: "DELETE",
     }),
+  sectors: (f: Filters) => request<Sectors>(withFilters("/api/sectors", f)),
+  backtest: (r: BacktestRule, f: Filters) => {
+    const p = new URLSearchParams({
+      side: r.side,
+      hold_days: String(r.hold_days),
+      min_value: String(r.min_value),
+      one_per_stock_days: String(r.one_per_stock_days),
+      market_only: String(f.marketOnly),
+      basis: f.basis,
+    });
+    if (r.min_conviction != null && r.side === "buy") p.set("min_conviction", String(r.min_conviction));
+    if (r.min_stake_pct != null) p.set("min_stake_pct", String(r.min_stake_pct));
+    if (r.sectors.length) p.set("sectors", r.sectors.join(","));
+    if (r.caps.length) p.set("caps", r.caps.join(","));
+    if (r.start) p.set("start", r.start);
+    if (r.end) p.set("end", r.end);
+    return request<BacktestResult>(`/api/research/backtest?${p}`);
+  },
+  eventStudy: (groups: "side" | "conviction", f: Filters) =>
+    request<EventStudy>(`/api/research/event-study?groups=${groups}&market_only=${f.marketOnly}&basis=${f.basis}`),
   alerts: (limit = 100) => request<{ unread: number; alerts: Alert[] }>(`/api/alerts?limit=${limit}`),
   markRead: (ids?: number[]) =>
     request<{ unread: number }>("/api/alerts/read", { method: "POST", json: ids ? { ids } : {} }),

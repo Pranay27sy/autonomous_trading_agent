@@ -11,7 +11,7 @@ import logging
 import re
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import alerts as alert_rules
-from . import notify, service
+from . import notify, research, service
 from .config import Settings, configure_logging, load_settings
 from .prices import BENCHMARK, nse_ticker
 from .refresh import RefreshInProgress, refresh_all
@@ -236,6 +236,68 @@ def create_app(settings: Settings | None = None,
                q: Annotated[str | None, Query(max_length=100)] = None) -> dict:
         _, view = events_for(request, f)
         return service.trades(view, q)
+
+    # --- research -----------------------------------------------------------------
+    research_cache: OrderedDict = OrderedDict()
+    research_lock = threading.Lock()
+
+    def cached(request: Request, key: tuple, compute):
+        """Research results are deterministic until the next refresh; keep the last 16."""
+        key = (request.app.state.events.version(), *key)
+        with research_lock:
+            if key in research_cache:
+                research_cache.move_to_end(key)
+                return research_cache[key]
+        value = compute()
+        with research_lock:
+            research_cache[key] = value
+            while len(research_cache) > 16:
+                research_cache.popitem(last=False)
+        return value
+
+    def closes_and_bench(request: Request):
+        store: Store = request.app.state.store
+        return (lambda s: store.load_prices(nse_ticker(s))), store.load_prices(BENCHMARK)
+
+    @app.get("/api/research/backtest")
+    def backtest(
+        request: Request,
+        side: Literal["buy", "sell"] = "buy",
+        hold_days: Annotated[int, Query(ge=1, le=250)] = 60,
+        min_value: Annotated[float, Query(ge=0, le=1e12)] = 1e6,
+        min_conviction: Annotated[int | None, Query(ge=0, le=100)] = None,
+        min_stake_pct: Annotated[float | None, Query(ge=0, le=100)] = None,
+        sectors: Annotated[str, Query(max_length=500)] = "",
+        caps: Annotated[str, Query(max_length=200)] = "",
+        start: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+        end: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+        one_per_stock_days: Annotated[int, Query(ge=0, le=365)] = 0,
+        market_only: bool = True,
+        basis: Literal["disclosure_date", "trade_to"] = "disclosure_date",
+    ) -> dict:
+        rule = research.Rule(side, hold_days, min_value, min_conviction, min_stake_pct,
+                             tuple(s for s in sectors.split(",") if s),
+                             tuple(c for c in caps.split(",") if c), start, end, one_per_stock_days)
+
+        def run():
+            events = request.app.state.events.get(market_only, basis)
+            closes, bench = closes_and_bench(request)
+            out = research.backtest(events, closes, bench, rule)
+            out["trades"] = out["trades"][:1000]  # newest first
+            return service.clean_tree(out)
+
+        return cached(request, ("backtest", rule, market_only, basis), run)
+
+    @app.get("/api/research/event-study")
+    def event_study(request: Request, groups: Literal["side", "conviction"] = "side",
+                    market_only: bool = True,
+                    basis: Literal["disclosure_date", "trade_to"] = "disclosure_date") -> dict:
+        def run():
+            events = request.app.state.events.get(market_only, basis)
+            closes, bench = closes_and_bench(request)
+            return research.event_study(events, closes, bench, groups=groups)
+
+        return cached(request, ("event_study", groups, market_only, basis), run)
 
     @app.get("/api/sectors")
     def sectors(request: Request, f: F) -> dict:

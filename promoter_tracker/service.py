@@ -107,6 +107,15 @@ def clean(value: Any) -> Any:
     return value
 
 
+def clean_tree(obj: Any) -> Any:
+    """clean() applied through nested dicts and lists."""
+    if isinstance(obj, dict):
+        return {k: clean_tree(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [clean_tree(v) for v in obj]
+    return clean(obj)
+
+
 def records(df: pd.DataFrame, fields: list[str]) -> list[dict]:
     cols = [c for c in fields if c in df.columns]
     return [{c: clean(v) for c, v in zip(cols, row, strict=True)}

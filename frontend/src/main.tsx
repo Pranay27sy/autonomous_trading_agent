@@ -29,6 +29,7 @@ const queryClient = new QueryClient({
 });
 
 const stockPage = () => import("./pages/Stock").then((m) => ({ Component: m.Stock }));
+const researchPage = () => import("./pages/Research").then((m) => ({ Component: m.Research }));
 
 const router = createBrowserRouter([
   {
@@ -37,6 +38,7 @@ const router = createBrowserRouter([
       { index: true, element: <Overview /> },
       { path: "trades", element: <Trades /> },
       { path: "watchlist", element: <Watchlist /> },
+      { path: "research", lazy: researchPage },
       { path: "alerts", element: <Alerts /> },
       // The stock page carries the charting library; load it on first visit.
       { path: "stock", lazy: stockPage },

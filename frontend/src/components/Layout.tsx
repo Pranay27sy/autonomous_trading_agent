@@ -24,6 +24,7 @@ export function Layout() {
           </NavLink>
           <NavLink to={{ pathname: "/trades", search }}>Trades</NavLink>
           <NavLink to={{ pathname: "/stock", search }}>Stock</NavLink>
+          <NavLink to={{ pathname: "/research", search }}>Research</NavLink>
           <NavLink to={{ pathname: "/watchlist", search }}>Watchlist</NavLink>
         </nav>
         <div className="topbar-right">
