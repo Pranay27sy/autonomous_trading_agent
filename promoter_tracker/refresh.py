@@ -21,7 +21,7 @@ from typing import Callable
 
 from filelock import FileLock, Timeout
 
-from . import alerts, analysis, notify
+from . import alerts, analysis, companies, notify
 from .config import configure_logging, load_settings
 from .nse_client import NSEClient
 from .prices import BENCHMARK, download_bars, nse_ticker, refresh_prices
@@ -145,6 +145,12 @@ def _refresh_all(store, backfill_days, client, downloader, today, progress, sinc
     for i, ticker in enumerate(tickers, 1):
         progress(f"Prices {i}/{len(tickers)}: {ticker}")
         result.price_rows += refresh_prices(store, ticker, downloader=downloader)
+
+    try:  # sector / market cap; nice to have, so never a refresh error
+        companies.refresh_company_info(store, symbols, companies.fetch_info, progress)
+    except Exception as err:
+        log.exception("Company info refresh failed")
+        result.warnings.append(f"Company info: {err}")
 
     _raise_alerts(store, result, progress, channels)
     if not result.errors:

@@ -236,6 +236,11 @@ def create_app(settings: Settings | None = None,
         _, view = events_for(request, f)
         return service.trades(view, q)
 
+    @app.get("/api/sectors")
+    def sectors(request: Request, f: F) -> dict:
+        _, view = events_for(request, f)
+        return service.sectors(view)
+
     @app.get("/api/stocks")
     def stocks(request: Request, f: F) -> list[dict]:
         events, view = events_for(request, f)

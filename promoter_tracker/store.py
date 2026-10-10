@@ -78,6 +78,15 @@ CREATE TABLE IF NOT EXISTS alerts (
     UNIQUE (kind, dedup_key)
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at);
+CREATE TABLE IF NOT EXISTS company_info (
+    symbol TEXT PRIMARY KEY,
+    name TEXT,
+    sector TEXT,
+    industry TEXT,
+    market_cap REAL,           -- INR, as of updated_at
+    shares_outstanding REAL,
+    updated_at TEXT NOT NULL   -- also set when the lookup failed, so it isn't retried daily
+);
 """
 
 
@@ -316,6 +325,27 @@ class Store:
         with self._lock, self.conn:
             self.conn.executemany("UPDATE alerts SET notified_at = ? WHERE id = ?",
                                   [(_now(), i) for i in ids])
+
+    # --- company info -------------------------------------------------------
+    COMPANY_FIELDS = ("name", "sector", "industry", "market_cap", "shares_outstanding")
+
+    def upsert_company_info(self, symbol: str, info: dict) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO company_info (symbol, name, sector, industry, market_cap, "
+                "shares_outstanding, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (symbol, *(info.get(f) for f in self.COMPANY_FIELDS), _now()))
+
+    def company_info(self) -> pd.DataFrame:
+        """Sector, industry and market cap per symbol (index: symbol)."""
+        with self._lock:
+            df = pd.read_sql_query("SELECT * FROM company_info", self.conn)
+        return df.set_index("symbol")
+
+    def company_info_age(self) -> dict[str, str]:
+        """symbol -> updated_at, for deciding what to look up again."""
+        with self._lock:
+            return dict(self.conn.execute("SELECT symbol, updated_at FROM company_info"))
 
     # --- meta -------------------------------------------------------------
     def set_meta(self, key: str, value: str) -> None:

@@ -230,3 +230,20 @@ def test_cross_site_writes_are_refused(client):
     same = {"Origin": "http://testserver"}
     assert client.put("/api/watchlist/ABCLTD", headers=same).status_code == 200
     assert client.get("/api/status", headers=evil).status_code == 200  # reads are fine
+
+
+def test_sectors_and_cap_buckets(tmp_path):
+    db = tmp_path / "t.db"
+    seed(db)
+    store = Store(db)
+    store.upsert_company_info("ABCLTD", {"sector": "Industrials", "market_cap": 6e11})
+    store.upsert_company_info("XYZIND", {"sector": "Energy", "market_cap": 3e10})
+    store.close()
+    with TestClient(api.create_app(Settings(db_path=db, auto_refresh=False), frontend_dist=None)) as c:
+        body = c.get("/api/sectors", params=ALL).json()
+        by = {r["sector"]: r for r in body["sectors"]}
+        assert by["Industrials"]["buy_value"] == 25e5 + 13e5 and by["Industrials"]["top_buy"] == "ABCLTD"
+        assert by["Energy"]["net_value"] == -4e7 and "Unclassified" in by  # NEWFMT has no info
+        assert [r["bucket"] for r in body["caps"]] == ["Large cap", "Small cap", "Unknown"]
+        stock = c.get("/api/stocks/ABCLTD", params=ALL).json()
+        assert stock["sector"] == "Industrials" and stock["cap_bucket"] == "Large cap"

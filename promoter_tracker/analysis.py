@@ -89,10 +89,12 @@ def internal_transfers(events: pd.DataFrame) -> pd.Series:
     flags = pd.Series(False, index=events.index)
     if events.empty:
         return flags
-    day = events["trade_to"].fillna(events["event_date"]) if "trade_to" in events         else events["event_date"]
+    day = (events["trade_to"].fillna(events["event_date"]) if "trade_to" in events
+           else events["event_date"])
     keyed = events.assign(_day=day)
     sides = keyed.groupby(["symbol", "_day"])["direction"].transform("nunique")
-    for _, g in keyed[sides > 1].groupby(["symbol", "_day"]):  # days with buys and sells
+    # Only stock-days with both buys and sells can hold a transfer.
+    for _, g in keyed[sides > 1].groupby(["symbol", "_day"]):
         sells = g[g["direction"] == "sell"]
         used: set = set()
         for bi, b in g[g["direction"] == "buy"].iterrows():

@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from . import analysis
+from . import analysis, companies
 from .prices import BENCHMARK, nse_ticker
 from .store import Store
 
@@ -27,6 +27,7 @@ _BAR_FIELDS = ("open", "high", "low", "close", "volume")
 TRADE_FIELDS = ["event_date", "symbol", "company", "person", "category", "direction", "mode",
                 "quantity", "value", "holding_before_pct", "holding_after_pct",
                 "holding_change_pct", "disclosure_date", "trade_to", "internal_transfer",
+                "sector", "cap_bucket",
                 *[f"ret_{h}" for h in analysis.HORIZONS], *[f"exc_{h}" for h in analysis.HORIZONS]]
 
 
@@ -69,6 +70,7 @@ class EventCache:
                 events = analysis.event_returns(
                     events, lambda s: self.store.load_prices(nse_ticker(s)),
                     self.store.load_prices(BENCHMARK))
+            events = companies.with_company_info(events, self.store.company_info())
             self._cache[key] = events
             while len(self._cache) > self.max_entries:
                 self._cache.popitem(last=False)
@@ -193,9 +195,14 @@ def stock(events: pd.DataFrame, symbol: str, sides: tuple[str, ...], bars: pd.Da
     hold = sev.dropna(subset=["holding_after_pct"]).sort_values("event_date")
     last = prices.iloc[-1] if len(prices) else None
     year_ago = prices.asof(prices.index[-1] - pd.Timedelta(days=365)) if len(prices) else None
+    first = events.loc[events["symbol"] == symbol].iloc[0]
     return {
         "symbol": symbol,
-        "company": clean(events.loc[events["symbol"] == symbol, "company"].iloc[0]),
+        "company": clean(first["company"]),
+        "sector": clean(first.get("sector")),
+        "industry": clean(first.get("industry")),
+        "market_cap": clean(first.get("market_cap")),
+        "cap_bucket": clean(first.get("cap_bucket")),
         "kpis": {
             "last_close": clean(last),
             "last_date": clean(prices.index[-1]) if len(prices) else None,
@@ -249,3 +256,36 @@ def watchlist(events: pd.DataFrame, watched: list[dict], sides: tuple[str, ...],
             if len(px) and month_ago is not None and pd.notna(month_ago) else None,
         })
     return out
+
+
+def _flow(group: pd.DataFrame) -> dict:
+    buys = group[group["direction"] == "buy"]
+    sells = group[group["direction"] == "sell"]
+    net_by_stock = group.groupby("symbol")["signed_value"].sum()
+    return {
+        "buy_value": float(buys["value"].sum()),
+        "sell_value": float(sells["value"].sum()),
+        "net_value": float(group["signed_value"].sum()),
+        "trades": len(group),
+        "stocks": int(group["symbol"].nunique()),
+        "stocks_net_buying": int((net_by_stock > 0).sum()),
+        "top_buy": clean(net_by_stock.idxmax()) if len(net_by_stock) and net_by_stock.max() > 0
+        else None,
+    }
+
+
+def sectors(view: pd.DataFrame) -> dict:
+    """Promoter flow per sector and per market-cap bucket."""
+    if view.empty:
+        return {"sectors": [], "caps": [], "classified_share": None}
+    v = view.assign(sector=view["sector"].fillna("Unclassified"),
+                    cap_bucket=view["cap_bucket"].fillna("Unknown"))
+    by_sector = [{"sector": k, **_flow(g)} for k, g in v.groupby("sector")]
+    order = [b for b, _ in companies.BUCKETS] + ["Unknown"]
+    by_cap = [{"bucket": k, **_flow(g)} for k, g in v.groupby("cap_bucket")]
+    return {
+        "sectors": sorted(by_sector, key=lambda r: -r["net_value"]),
+        "caps": sorted(by_cap, key=lambda r: order.index(r["bucket"])),
+        # Share of trades with a known sector; low until company info is loaded.
+        "classified_share": float((v["sector"] != "Unclassified").mean()),
+    }
