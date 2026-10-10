@@ -4,7 +4,7 @@
 
 A web app that shows promoter buying and selling in NSE-listed stocks and what the share
 price did afterwards. A FastAPI backend serves JSON and a React + TypeScript frontend, in a
-dark trading-terminal style. It has three pages:
+dark trading-terminal style. Its main pages:
 
 - **Overview:** promoter buying, selling and net flow with weekly sparklines. Then the
   key question, *does promoter buying beat the market?*: average return vs Nifty and how
@@ -15,6 +15,23 @@ dark trading-terminal style. It has three pages:
 - **Stock:** price chart with buy ▲ / sell ▼ markers sized by rupee value, and per-trade
   returns at +1/+5/+20/+60/+120 trading days, raw and relative to Nifty 50. The selected
   stock is in the URL, so links can be shared.
+
+### Watchlist and alerts
+Click **☆ Watch** on a stock to add it to your watchlist. After every refresh, the app checks
+the newly arrived promoter trades and raises an alert for:
+- any promoter trade in a watched stock;
+- a large promoter buy (default ₹5 cr) or sell (default ₹25 cr) in any stock;
+- a buying cluster: several promoters (default 3) buying the same stock within 30 days.
+
+Several trades of one kind in one stock become a single alert, and a cluster alert replaces
+that stock's large-buy alerts. Alerts show under the bell in the top bar and on the **Alerts**
+page, where you can change the rules. Only trades that arrive after the feature is first
+switched on raise alerts, so your existing history doesn't.
+
+To also get each refresh's alerts as one Telegram message and/or email, set the variables in
+[`.env.example`](.env.example) (copy it to `.env` for Docker) and restart. Secrets are read from
+the environment only. They are never stored in the database or sent to the browser, and the
+Alerts page has a **Send a test alert** button.
 
 Click any symbol in a table to open its stock page. The filter bar (period, side, minimum
 value, open-market only, and the date returns are measured from) applies to every page and
@@ -90,6 +107,9 @@ beyond your own machine or network.
 | `PROMOTER_LOG_LEVEL` | `INFO` | Logging level |
 | `PROMOTER_LOG_FILE` | none | Also log to this file (rotated at 5 MB, 3 kept) |
 | `PROMOTER_FRONTEND_DIST` | `frontend/dist` | Built frontend to serve at `/` |
+| `PROMOTER_PUBLIC_URL` | none | App URL, used for links in alert messages |
+| `PROMOTER_TELEGRAM_BOT_TOKEN`, `PROMOTER_TELEGRAM_CHAT_ID` | none | Send alerts to Telegram |
+| `PROMOTER_SMTP_HOST`, `_PORT`, `_USER`, `_PASSWORD`, `_FROM`, `PROMOTER_ALERT_EMAIL_TO` | none | Send alerts by email (comma-separated recipients) |
 
 ### How returns are measured
 - The event date defaults to the **disclosure date**, the first day the public could act.

@@ -209,3 +209,33 @@ tbody tr:last-child td { border-bottom: 0; }
   .brand-name, .refresh-label { display: none; }
   .topbar { gap: 8px; }
 }
+
+/* --- watchlist & alerts ------------------------------------------------------- */
+.btn.star.on { color: var(--accent); border-color: var(--accent); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.btn.primary:hover:not(:disabled) { color: var(--accent-ink); filter: brightness(1.08); }
+.btn.bell { position: relative; padding: 0 9px; }
+.badge {
+  position: absolute; top: -6px; right: -6px; min-width: 17px; height: 17px; padding: 0 4px;
+  border-radius: 9px; background: var(--sell); color: #fff; font: 600 10px/17px var(--mono); text-align: center;
+}
+.alert-list { list-style: none; margin: 0; padding: 0; }
+.alert-list li { display: flex; align-items: flex-start; gap: 10px; padding: 9px 4px; border-bottom: 1px solid var(--line); }
+.alert-list li:last-child { border-bottom: 0; }
+.alert-list li a { display: flex; gap: 10px; align-items: flex-start; flex: 1; min-width: 0; }
+.alert-list li a:hover .alert-title { color: var(--accent); }
+.alert-list li.unread .alert-title { font-weight: 600; }
+.alert-list li.unread::before { content: ""; flex: none; width: 6px; height: 6px; margin-top: 7px; border-radius: 50%; background: var(--accent); }
+.alert-list li:not(.unread)::before { content: ""; flex: none; width: 6px; }
+.alert-list .chip { flex: none; margin-top: 1px; }
+.alert-title { display: block; font-size: 13px; }
+.alert-detail { display: block; font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
+.alert-time { flex: none; font-size: 11px; font-family: var(--mono); margin-top: 2px; }
+.alert-list.compact { max-height: 320px; overflow: auto; margin-bottom: 10px; }
+.alert-list.compact .alert-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rules { display: grid; gap: 14px; }
+.rule { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.rule-inputs { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.num-input { width: 84px; font-family: var(--mono); text-align: right; }
+.channels { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); padding: 1px 5px; border-radius: 3px; }

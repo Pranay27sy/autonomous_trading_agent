@@ -8,13 +8,20 @@
 | PROMOTER_LOG_LEVEL       | INFO                | Python logging level                       |
 | PROMOTER_LOG_FILE        | (none)              | Also log to this file, rotated at 5 MB     |
 | PROMOTER_FRONTEND_DIST   | frontend/dist       | Built web frontend served at /             |
+| PROMOTER_PUBLIC_URL      | (none)              | App URL, for links in alert messages       |
+
+Alert delivery (optional; alerts always show in the app):
+| PROMOTER_TELEGRAM_BOT_TOKEN, PROMOTER_TELEGRAM_CHAT_ID | Telegram bot and chat     |
+| PROMOTER_SMTP_HOST, PROMOTER_SMTP_PORT (587)           | SMTP server (465 = SSL)   |
+| PROMOTER_SMTP_USER, PROMOTER_SMTP_PASSWORD             | SMTP login, if needed     |
+| PROMOTER_SMTP_FROM, PROMOTER_ALERT_EMAIL_TO            | sender; comma-separated recipients |
 """
 from __future__ import annotations
 
 import logging
 import logging.handlers
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import Mapping
@@ -32,6 +39,16 @@ class Settings:
     log_level: str = "INFO"
     log_file: Path | None = None
     frontend_dist: Path = DEFAULT_FRONTEND
+    public_url: str | None = None
+    # Secrets are kept out of repr so a logged Settings never leaks them.
+    telegram_bot_token: str | None = field(default=None, repr=False)
+    telegram_chat_id: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = field(default=None, repr=False)
+    smtp_from: str | None = None
+    alert_email_to: list[str] = field(default_factory=list)
 
 
 def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
@@ -47,6 +64,16 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         log_level=env.get("PROMOTER_LOG_LEVEL", "INFO").upper(),
         log_file=Path(log_file) if log_file else None,
         frontend_dist=Path(env.get("PROMOTER_FRONTEND_DIST") or DEFAULT_FRONTEND),
+        public_url=env.get("PROMOTER_PUBLIC_URL") or None,
+        telegram_bot_token=env.get("PROMOTER_TELEGRAM_BOT_TOKEN") or None,
+        telegram_chat_id=env.get("PROMOTER_TELEGRAM_CHAT_ID") or None,
+        smtp_host=env.get("PROMOTER_SMTP_HOST") or None,
+        smtp_port=int(env.get("PROMOTER_SMTP_PORT") or 587),
+        smtp_user=env.get("PROMOTER_SMTP_USER") or None,
+        smtp_password=env.get("PROMOTER_SMTP_PASSWORD") or None,
+        smtp_from=env.get("PROMOTER_SMTP_FROM") or None,
+        alert_email_to=[a.strip() for a in (env.get("PROMOTER_ALERT_EMAIL_TO") or "").split(",")
+                        if a.strip()],
     )
 
 

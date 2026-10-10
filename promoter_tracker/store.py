@@ -57,6 +57,27 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+CREATE TABLE IF NOT EXISTS watchlist (
+    symbol TEXT PRIMARY KEY,
+    added_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,          -- watchlist | big_buy | big_sell | cluster
+    dedup_key TEXT NOT NULL,     -- trade_key, or symbol:start for clusters
+    symbol TEXT NOT NULL,
+    company TEXT,
+    direction TEXT,
+    value REAL,
+    event_date TEXT,
+    title TEXT NOT NULL,
+    detail TEXT,
+    read INTEGER NOT NULL DEFAULT 0,
+    notified_at TEXT,
+    UNIQUE (kind, dedup_key)
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at);
 """
 
 
@@ -90,7 +111,10 @@ class Store:
         for col in TRADE_COLUMNS:
             if col not in have:
                 self.conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {_COLUMN_TYPES.get(col, 'TEXT')}")
+        if "first_seen" not in have:  # when this database first stored the row (alerts)
+            self.conn.execute("ALTER TABLE trades ADD COLUMN first_seen TEXT")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_filing ON trades(filing_id)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_first_seen ON trades(first_seen)")
         have = {row[1] for row in self.conn.execute("PRAGMA table_info(prices)")}
         for col in OHLC_EXTRA:
             if col not in have:
@@ -116,13 +140,14 @@ class Store:
                 self.conn.executemany("DELETE FROM trades WHERE filing_id = ?",
                                       [(r,) for r in replaced])
             dead = self._superseded({t["filing_id"] for t in trades if t.get("filing_id")})
-            rows = [(trade_key(t), *(t.get(c) for c in TRADE_COLUMNS))
+            seen = _now_precise()
+            rows = [(trade_key(t), *(t.get(c) for c in TRADE_COLUMNS), seen)
                     for t in trades if t.get("filing_id") not in dead]
             before = self._count_trades()
             # Rows stored before filing_id existed pick it up when re-fetched.
             self.conn.executemany(
-                f"INSERT INTO trades (trade_key, {', '.join(TRADE_COLUMNS)}) "  # noqa: S608 (constant column names)
-                f"VALUES ({', '.join('?' * (len(TRADE_COLUMNS) + 1))}) "
+                f"INSERT INTO trades (trade_key, {', '.join(TRADE_COLUMNS)}, first_seen) "  # noqa: S608 (constant column names)
+                f"VALUES ({', '.join('?' * (len(TRADE_COLUMNS) + 2))}) "
                 "ON CONFLICT(trade_key) DO UPDATE SET "
                 "filing_id = COALESCE(trades.filing_id, excluded.filing_id)",
                 rows,
@@ -145,9 +170,14 @@ class Store:
                 f"({', '.join('?' * len(part))})", part))
         return found
 
-    def load_trades(self) -> pd.DataFrame:
+    def load_trades(self, seen_after: str | None = None) -> pd.DataFrame:
+        """All trades, or only those first stored after the ISO time seen_after."""
         with self._lock:
-            df = pd.read_sql_query("SELECT * FROM trades", self.conn)
+            if seen_after is None:
+                df = pd.read_sql_query("SELECT * FROM trades", self.conn)
+            else:
+                df = pd.read_sql_query("SELECT * FROM trades WHERE first_seen > ?", self.conn,
+                                       params=(seen_after,))
         for col in ("trade_from", "trade_to", "intimation_date", "disclosure_date"):
             df[col] = pd.to_datetime(df[col], errors="coerce")
         df["disclosure_estimated"] = df["disclosure_estimated"].fillna(0).astype(bool)
@@ -215,6 +245,78 @@ class Store:
             ).fetchone()
         return row[0] if row else None
 
+    def max_first_seen(self) -> str | None:
+        with self._lock:
+            return self.conn.execute("SELECT MAX(first_seen) FROM trades").fetchone()[0]
+
+    # --- watchlist ----------------------------------------------------------
+    def watchlist(self) -> list[dict]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT symbol, added_at FROM watchlist ORDER BY symbol").fetchall()
+        return [{"symbol": s, "added_at": a} for s, a in rows]
+
+    def watch(self, symbol: str) -> bool:
+        """Add to the watchlist; False if it was already there."""
+        with self._lock, self.conn:
+            cur = self.conn.execute("INSERT OR IGNORE INTO watchlist VALUES (?, ?)",
+                                    (symbol, _now()))
+        return cur.rowcount == 1
+
+    def unwatch(self, symbol: str) -> bool:
+        with self._lock, self.conn:
+            cur = self.conn.execute("DELETE FROM watchlist WHERE symbol = ?", (symbol,))
+        return cur.rowcount == 1
+
+    # --- alerts -------------------------------------------------------------
+    ALERT_FIELDS = ("kind", "dedup_key", "symbol", "company", "direction", "value",
+                    "event_date", "title", "detail")
+
+    def add_alerts(self, alerts: list[dict]) -> list[dict]:
+        """Store alerts, skipping any already raised (same kind + dedup_key).
+
+        Returns the ones actually added, with id and created_at.
+        """
+        added = []
+        with self._lock, self.conn:
+            for a in alerts:
+                created = _now()
+                cur = self.conn.execute(
+                    f"INSERT OR IGNORE INTO alerts (created_at, {', '.join(self.ALERT_FIELDS)}) "  # noqa: S608 (constant column names)
+                    f"VALUES (?, {', '.join('?' * len(self.ALERT_FIELDS))})",
+                    (created, *(a.get(f) for f in self.ALERT_FIELDS)))
+                if cur.rowcount == 1:
+                    added.append({**a, "id": cur.lastrowid, "created_at": created, "read": False})
+        return added
+
+    def alerts(self, limit: int = 100, unread_only: bool = False) -> list[dict]:
+        where = "WHERE read = 0" if unread_only else ""
+        with self._lock:
+            cur = self.conn.execute(
+                f"SELECT * FROM alerts {where} ORDER BY id DESC LIMIT ?", (limit,))  # noqa: S608 (constant clause)
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
+        for r in rows:
+            r["read"] = bool(r["read"])
+        return rows
+
+    def unread_alerts(self) -> int:
+        with self._lock:
+            return self.conn.execute("SELECT COUNT(*) FROM alerts WHERE read = 0").fetchone()[0]
+
+    def mark_alerts_read(self, ids: list[int] | None = None) -> int:
+        """Mark the given alerts (or all of them) read."""
+        with self._lock, self.conn:
+            if ids is None:
+                return self.conn.execute("UPDATE alerts SET read = 1 WHERE read = 0").rowcount
+            return self.conn.executemany("UPDATE alerts SET read = 1 WHERE id = ?",
+                                         [(i,) for i in ids]).rowcount
+
+    def mark_alerts_notified(self, ids: list[int]) -> None:
+        with self._lock, self.conn:
+            self.conn.executemany("UPDATE alerts SET notified_at = ? WHERE id = ?",
+                                  [(_now(), i) for i in ids])
+
     # --- meta -------------------------------------------------------------
     def set_meta(self, key: str, value: str) -> None:
         with self._lock, self.conn:
@@ -246,3 +348,8 @@ def _num(value) -> float | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _now_precise() -> str:
+    # Microseconds, so two refreshes in the same second still order correctly.
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")

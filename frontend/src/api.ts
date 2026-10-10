@@ -141,7 +141,52 @@ export interface Status {
   /** Latest disclosure date and latest Nifty close in the cache (YYYY-MM-DD). */
   disclosures_through: string | null;
   prices_through: string | null;
+  unread_alerts: number;
   refresh: RefreshStatus;
+}
+
+export interface WatchItem {
+  symbol: string;
+  company: string | null;
+  added_at: string;
+  last_trade: { event_date: string; direction: Side; value: number | null; person: string | null } | null;
+  net_value_90d: number;
+  trades_90d: number;
+  last_close: number | null;
+  change_1m: number | null;
+}
+
+export type AlertKind = "watchlist" | "big_buy" | "big_sell" | "cluster";
+
+export interface Alert {
+  id: number;
+  created_at: string;
+  kind: AlertKind;
+  symbol: string;
+  company: string | null;
+  direction: Side | null;
+  value: number | null;
+  event_date: string | null;
+  title: string;
+  detail: string | null;
+  read: boolean;
+  notified_at: string | null;
+}
+
+/** Alert rules; a null threshold turns that rule off. */
+export interface AlertRules {
+  watchlist_trades: boolean;
+  big_buy_value: number | null;
+  big_sell_value: number | null;
+  cluster_min_people: number | null;
+  cluster_window_days: number;
+  market_only: boolean;
+}
+
+export interface AlertSettings {
+  rules: AlertRules;
+  /** Which delivery channels the server has configured (secrets stay on the server). */
+  channels: { telegram: boolean; email: boolean };
 }
 
 export class ApiError extends Error {
@@ -153,8 +198,13 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, { headers: { Accept: "application/json" }, ...init });
+async function request<T>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
+  const { json, ...rest } = init ?? {};
+  const res = await fetch(path, {
+    ...rest,
+    headers: { Accept: "application/json", ...(json !== undefined ? { "Content-Type": "application/json" } : {}) },
+    body: json !== undefined ? JSON.stringify(json) : rest.body,
+  });
   const body = await res.json().catch(() => null);
   if (!res.ok && res.status !== 409) {
     const detail = body?.detail;
@@ -181,4 +231,18 @@ export const api = {
   stocks: (f: Filters) => request<StockListItem[]>(withFilters("/api/stocks", f)),
   stock: (symbol: string, f: Filters) =>
     request<StockDetail>(withFilters(`/api/stocks/${encodeURIComponent(symbol)}`, f)),
+  watchlist: (f: Filters) => request<WatchItem[]>(withFilters("/api/watchlist", f)),
+  watch: (symbol: string) =>
+    request<{ symbol: string; watching: boolean }>(`/api/watchlist/${encodeURIComponent(symbol)}`, { method: "PUT" }),
+  unwatch: (symbol: string) =>
+    request<{ symbol: string; watching: boolean }>(`/api/watchlist/${encodeURIComponent(symbol)}`, {
+      method: "DELETE",
+    }),
+  alerts: (limit = 100) => request<{ unread: number; alerts: Alert[] }>(`/api/alerts?limit=${limit}`),
+  markRead: (ids?: number[]) =>
+    request<{ unread: number }>("/api/alerts/read", { method: "POST", json: ids ? { ids } : {} }),
+  alertSettings: () => request<AlertSettings>("/api/alerts/settings"),
+  saveAlertSettings: (rules: AlertRules) =>
+    request<AlertSettings>("/api/alerts/settings", { method: "PUT", json: rules }),
+  testAlert: () => request<{ sent: string[]; errors: string[] }>("/api/alerts/test", { method: "POST" }),
 };

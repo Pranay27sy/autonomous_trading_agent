@@ -5,6 +5,7 @@ import { api } from "../api";
 import { MIN_VALUES, PERIODS, useFilters } from "../filters";
 import { ago, day, inr } from "../format";
 import { Segmented, Switch } from "./ui";
+import { AlertBell } from "./watch";
 
 export function Layout() {
   const { search } = useLocation();
@@ -23,8 +24,10 @@ export function Layout() {
           </NavLink>
           <NavLink to={{ pathname: "/trades", search }}>Trades</NavLink>
           <NavLink to={{ pathname: "/stock", search }}>Stock</NavLink>
+          <NavLink to={{ pathname: "/watchlist", search }}>Watchlist</NavLink>
         </nav>
         <div className="topbar-right">
+          <Bell />
           <RefreshControl />
         </div>
       </header>
@@ -38,6 +41,12 @@ export function Layout() {
       </footer>
     </>
   );
+}
+
+function Bell() {
+  // Same query as RefreshControl's; React Query shares it, so this adds no requests.
+  const status = useQuery({ queryKey: ["status"], queryFn: api.status });
+  return <AlertBell unread={status.data?.unread_alerts ?? 0} />;
 }
 
 function FilterBar() {

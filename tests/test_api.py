@@ -187,3 +187,46 @@ def test_weekly_series_ends_on_latest_week():
     weeks = service.weekly(view, 8)
     assert len(weeks) == 8 and weeks[0]["week"] == "2024-01-07" and weeks[-1]["week"] == "2024-02-25"
     assert weeks[0]["buy"] == 2e7 and weeks[-1]["net"] == -1e7
+
+
+def test_watchlist_add_list_remove(client):
+    assert client.put("/api/watchlist/abcltd").json() == {"symbol": "ABCLTD", "watching": True}
+    assert client.put("/api/watchlist/NOPE").status_code == 404
+    rows = client.get("/api/watchlist", params=ALL).json()
+    assert [r["symbol"] for r in rows] == ["ABCLTD"]
+    r = rows[0]
+    assert r["company"] == "ABC Limited" and r["last_trade"]["person"] == "Sita Kumar"
+    assert r["last_close"] > 0 and r["change_1m"] is not None
+    assert client.delete("/api/watchlist/ABCLTD").json()["watching"] is False
+    assert client.get("/api/watchlist").json() == []
+
+
+def test_alerts_list_and_mark_read(client):
+    store = client.app.state.store
+    store.add_alerts([{"kind": "big_buy", "dedup_key": str(i), "symbol": "ABCLTD",
+                       "title": f"alert {i}"} for i in range(3)])
+    body = client.get("/api/alerts").json()
+    assert body["unread"] == 3 and [a["title"] for a in body["alerts"]][0] == "alert 2"
+    assert client.get("/api/status").json()["unread_alerts"] == 3
+    first = body["alerts"][-1]["id"]
+    assert client.post("/api/alerts/read", json={"ids": [first]}).json() == {"unread": 2}
+    assert client.post("/api/alerts/read", json={}).json() == {"unread": 0}
+
+
+def test_alert_settings_round_trip_and_validation(client):
+    body = client.get("/api/alerts/settings").json()
+    assert body["rules"]["big_buy_value"] == 5e7
+    assert body["channels"] == {"telegram": False, "email": False}
+    new = {**body["rules"], "big_buy_value": None, "cluster_min_people": 4}
+    assert client.put("/api/alerts/settings", json=new).json()["rules"]["cluster_min_people"] == 4
+    assert client.put("/api/alerts/settings", json={**new, "cluster_min_people": 1}).status_code == 422
+    assert client.post("/api/alerts/test").status_code == 400  # no channel configured
+
+
+def test_cross_site_writes_are_refused(client):
+    evil = {"Origin": "https://evil.example"}
+    assert client.put("/api/watchlist/ABCLTD", headers=evil).status_code == 403
+    assert client.post("/api/refresh", headers=evil).status_code == 403
+    same = {"Origin": "http://testserver"}
+    assert client.put("/api/watchlist/ABCLTD", headers=same).status_code == 200
+    assert client.get("/api/status", headers=evil).status_code == 200  # reads are fine
