@@ -5,6 +5,7 @@ import { api } from "../api";
 import { MIN_VALUES, PERIODS, useFilters } from "../filters";
 import { ago, day, inr } from "../format";
 import { Segmented, Switch } from "./ui";
+import { CommandPalette } from "./CommandPalette";
 import { AlertBell } from "./watch";
 
 export function Layout() {
@@ -33,11 +34,20 @@ export function Layout() {
           <NavLink to={{ pathname: "/watchlist", search }}>Watchlist</NavLink>
         </nav>
         <div className="topbar-right">
+          <button
+            className="btn"
+            type="button"
+            title="Go to a page, stock or promoter (Ctrl+K)"
+            onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }))}
+          >
+            ⌕ <span className="refresh-label faint">Ctrl K</span>
+          </button>
           <Bell />
           <RefreshControl />
         </div>
       </header>
       <FilterBar />
+      <CommandPalette />
       <main>
         <Outlet />
       </main>
