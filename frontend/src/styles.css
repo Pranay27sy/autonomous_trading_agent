@@ -296,3 +296,9 @@ code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); pa
 .palette li[aria-selected="true"] { background: var(--panel-2); }
 .palette .chip { flex: none; min-width: 64px; text-align: center; }
 .palette-foot { padding: 8px 14px; border-top: 1px solid var(--line); font-size: 11px; font-family: var(--mono); }
+
+/* --- patterns v2 ------------------------------------------------------------------ */
+details.how summary { cursor: pointer; font-family: var(--mono); font-size: 13px; color: var(--muted); }
+details.how[open] summary { color: var(--text); margin-bottom: 8px; }
+details.how ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
+details.how b { color: var(--text); }

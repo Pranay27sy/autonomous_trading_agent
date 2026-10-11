@@ -192,6 +192,20 @@ function RulesCard() {
           checked={rules.pattern_promoter}
           onChange={(v) => set({ pattern_promoter: v })}
         />
+        {(rules.pattern_watchlist || rules.pattern_promoter) && (
+          <label className="rule muted" style={{ fontSize: 13 }}>
+            Only patterns with quality at least
+            <input
+              className="input num-input"
+              type="number"
+              min={0}
+              max={100}
+              aria-label="Minimum pattern quality"
+              value={rules.pattern_min_quality}
+              onChange={(e) => set({ pattern_min_quality: Math.min(100, Math.max(0, Number(e.target.value) || 0)) })}
+            />
+          </label>
+        )}
         <Switch
           label="Open-market trades only (ignore gifts, pledges, ESOPs…)"
           checked={rules.market_only}

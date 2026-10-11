@@ -206,8 +206,12 @@ def stock_list(events: pd.DataFrame, view: pd.DataFrame) -> list[dict]:
 
 
 def stock(events: pd.DataFrame, symbol: str, sides: tuple[str, ...], bars: pd.DataFrame,
-          exclude_transfers: bool = True) -> dict:
-    """bars: daily open/high/low/close/volume (Store.load_bars)."""
+          exclude_transfers: bool = True, about: dict | None = None) -> dict:
+    """bars: daily open/high/low/close/volume (Store.load_bars).
+
+    about: company/sector/industry/market_cap/cap_bucket for a stock with no
+    events under the current filters (e.g. only pledge or off-market filings).
+    """
     prices = bars["close"]
     sev = events[(events["symbol"] == symbol) & events["direction"].isin(sides)]
     if exclude_transfers:
@@ -217,7 +221,8 @@ def stock(events: pd.DataFrame, symbol: str, sides: tuple[str, ...], bars: pd.Da
     hold = sev.dropna(subset=["holding_after_pct"]).sort_values("event_date")
     last = prices.iloc[-1] if len(prices) else None
     year_ago = prices.asof(prices.index[-1] - pd.Timedelta(days=365)) if len(prices) else None
-    first = events.loc[events["symbol"] == symbol].iloc[0]
+    rows = events.loc[events["symbol"] == symbol] if not events.empty else events
+    first = rows.iloc[0] if len(rows) else pd.Series(about or {}, dtype=object)
     return {
         "symbol": symbol,
         "company": clean(first["company"]),
