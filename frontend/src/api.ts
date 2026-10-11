@@ -132,6 +132,7 @@ export interface StockDetail {
   prices: Bar[];
   trades: Trade[];
   pledges: PledgeEvent[];
+  patterns: PatternRow[];
 }
 
 export interface RefreshStatus {
@@ -169,7 +170,7 @@ export interface WatchItem {
   change_1m: number | null;
 }
 
-export type AlertKind = "watchlist" | "conviction" | "big_buy" | "big_sell" | "cluster" | "pledge" | "screen";
+export type AlertKind = "watchlist" | "conviction" | "big_buy" | "big_sell" | "cluster" | "pledge" | "screen" | "pattern";
 
 export interface Alert {
   id: number;
@@ -196,6 +197,8 @@ export interface AlertRules {
   market_only: boolean;
   min_conviction: number | null;
   pledge_invocations: boolean;
+  pattern_watchlist: boolean;
+  pattern_promoter: boolean;
 }
 
 export interface AlertSettings {
@@ -445,6 +448,65 @@ export interface SavedScreen {
   created_at: string;
 }
 
+export type PatternKey =
+  | "head_shoulders"
+  | "inverse_head_shoulders"
+  | "double_top"
+  | "double_bottom"
+  | "cup_handle"
+  | "ascending_triangle"
+  | "descending_triangle";
+
+export interface PatternRow {
+  symbol: string;
+  pattern: PatternKey;
+  name: string;
+  direction: "bull" | "bear";
+  start: string;
+  breakout: string;
+  breakout_price: number;
+  /** neckline / rim / flat side at the breakout */
+  level: number;
+  /** textbook measured-move target */
+  target: number;
+  volume_ratio: number | null;
+  points: { time: string; price: number; label: string }[];
+  line: { time: string; price: number }[];
+  promoter_buys: number;
+  promoter_net_value: number;
+  promoter_buying: boolean;
+  /** excess vs Nifty in the pattern's direction: positive = it worked */
+  signed_5: number | null;
+  signed_20: number | null;
+  signed_60: number | null;
+  company?: string | null;
+  last_close?: number | null;
+  since_breakout?: number | null;
+}
+
+export interface PatternPerf {
+  n: number;
+  mean_20: number | null;
+  mean_60: number | null;
+  median_60: number | null;
+  worked_60: number | null;
+}
+
+export interface PatternStats {
+  patterns: {
+    pattern: PatternKey;
+    name: string;
+    direction: "bull" | "bear";
+    count: number;
+    all: PatternPerf;
+    promoter: PatternPerf;
+    no_promoter: PatternPerf;
+  }[];
+  total: number;
+  from: string | null;
+  to: string | null;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -496,6 +558,13 @@ export const api = {
     }),
   sectors: (f: Filters) => request<Sectors>(withFilters("/api/sectors", f)),
   market: (f: Filters) => request<MarketFlow>(withFilters("/api/market", f)),
+  recentPatterns: (days: number, direction: string, pattern: string, promoterOnly: boolean) =>
+    request<{ rows: PatternRow[]; through: string | null }>(
+      `/api/patterns/recent?days=${days}&direction=${direction}&pattern=${pattern}&promoter_only=${promoterOnly}`,
+    ),
+  patternStats: () => request<PatternStats>("/api/patterns/stats"),
+  patternStudy: (pattern: string, split: "pattern" | "promoter") =>
+    request<EventStudy>(`/api/patterns/study?pattern=${pattern}&split=${split}`),
   screenPresets: () => request<Record<string, Partial<ScreenCriteria>>>("/api/screener/presets"),
   runScreen: (c: ScreenCriteria, f: Filters) =>
     request<{ rows: ScreenRow[]; count: number }>(`/api/screener/run?market_only=${f.marketOnly}&basis=${f.basis}`, {

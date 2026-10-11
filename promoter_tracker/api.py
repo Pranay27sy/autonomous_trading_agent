@@ -15,6 +15,7 @@ from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Annotated, Literal
 
 import pandas as pd
@@ -26,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import alerts as alert_rules
-from . import notify, pledges, research, screener, service
+from . import analysis, notify, patterns, pledges, research, screener, service
 from .config import Settings, configure_logging, load_settings
 from .prices import BENCHMARK, nse_ticker
 from .refresh import RefreshInProgress, refresh_all
@@ -36,6 +37,10 @@ log = logging.getLogger(__name__)
 
 _FROM_SETTINGS = Path("<settings>")
 SYMBOL_RE = re.compile(r"^[A-Z0-9&.\-]{1,20}$")
+PATTERN_FIELDS = ["symbol", "pattern", "name", "direction", "start", "breakout",
+                  "breakout_price", "level", "target", "volume_ratio", "points", "line",
+                  "promoter_buys", "promoter_net_value", "promoter_buying",
+                  "signed_5", "signed_20", "signed_60"]
 COMPARE_RE = r"^[A-Za-z0-9&.\-]{1,20}(,[A-Za-z0-9&.\-]{1,20}){0,3}$"  # 1-4 symbols
 TEST_ALERT_COOLDOWN = 30  # seconds between test messages
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -50,6 +55,8 @@ class AlertSettingsBody(BaseModel):
     market_only: bool = True
     min_conviction: int | None = Field(default=None, ge=0, le=100)
     pledge_invocations: bool = True
+    pattern_watchlist: bool = True
+    pattern_promoter: bool = False
 
 
 class CriteriaBody(BaseModel):
@@ -186,8 +193,11 @@ def create_app(settings: Settings | None = None,
             app.state.refresh.start(365)
         # Computing returns takes seconds on a full database; do the default view now
         # so the first page load doesn't wait for it.
-        threading.Thread(target=app.state.events.get, args=(True, "disclosure_date"),
-                         name="warm-cache", daemon=True).start()
+        def warm():
+            app.state.events.get(True, "disclosure_date")
+            pattern_data(SimpleNamespace(app=app))  # ~20s across all stocks
+
+        threading.Thread(target=warm, name="warm-cache", daemon=True).start()
         yield
         store.close()
 
@@ -265,18 +275,30 @@ def create_app(settings: Settings | None = None,
     research_cache: OrderedDict = OrderedDict()
     research_lock = threading.Lock()
 
+    key_locks: dict[tuple, threading.Lock] = {}
+
     def cached(request: Request, key: tuple, compute):
-        """Research results are deterministic until the next refresh; keep the last 16."""
+        """Research results are deterministic until the next refresh; keep the last 32.
+
+        Single-flight: concurrent requests for the same key wait for one computation
+        instead of each running it (the pattern scan alone takes ~20s).
+        """
         key = (request.app.state.events.version(), *key)
         with research_lock:
             if key in research_cache:
                 research_cache.move_to_end(key)
                 return research_cache[key]
-        value = compute()
-        with research_lock:
-            research_cache[key] = value
-            while len(research_cache) > 16:
-                research_cache.popitem(last=False)
+            lock = key_locks.setdefault(key, threading.Lock())
+        with lock:
+            with research_lock:
+                if key in research_cache:  # computed while we waited
+                    return research_cache[key]
+            value = compute()
+            with research_lock:
+                research_cache[key] = value
+                key_locks.pop(key, None)
+                while len(research_cache) > 32:
+                    research_cache.popitem(last=False)
         return value
 
     def closes_and_bench(request: Request):
@@ -398,6 +420,88 @@ def create_app(settings: Settings | None = None,
             raise HTTPException(404, "No such screen")
         return {"deleted": screen_id}
 
+    # --- chart patterns ---------------------------------------------------------------
+    def pattern_data(request) -> pd.DataFrame:
+        """Every detected pattern with promoter context and returns; cached per refresh."""
+        store: Store = request.app.state.store
+
+        def build():
+            trades = store.load_trades()
+            if trades.empty:
+                return patterns.to_frame([])
+            syms = sorted(set(trades.loc[trades["category"].map(analysis.is_promoter), "symbol"]))
+            # From a year before the first disclosure: older history adds work, not insight.
+            since = trades["disclosure_date"].min() - pd.Timedelta(days=365)
+            det = patterns.scan(syms, lambda s: store.load_bars(nse_ticker(s)), since)
+            events = request.app.state.events.get(True, "disclosure_date")
+            det = patterns.with_promoter_context(det, events)
+            det = patterns.with_returns(det, lambda s: store.load_prices(nse_ticker(s)),
+                                        store.load_prices(BENCHMARK))
+            names = events.drop_duplicates("symbol").set_index("symbol")["company"] \
+                if not events.empty else pd.Series(dtype=object)
+            return det.assign(company=det["symbol"].map(names)) if not det.empty else det
+
+        return cached(request, ("patterns",), build)
+
+    @app.get("/api/patterns/recent")
+    def recent_patterns(request: Request,
+                        days: Annotated[int, Query(ge=1, le=365)] = 30,
+                        direction: Literal["all", "bull", "bear"] = "all",
+                        pattern: Annotated[str, Query(pattern=r"^(all|[a-z_]{1,40})$")] = "all",
+                        promoter_only: bool = False) -> dict:
+        det = pattern_data(request)
+        if det.empty:
+            return {"rows": [], "through": None}
+        through = request.app.state.store.last_price_date(BENCHMARK)
+        d = det[det["breakout"] >= pd.Timestamp(through) - pd.Timedelta(days=days)]
+        if direction != "all":
+            d = d[d["direction"] == direction]
+        if pattern != "all":
+            d = d[d["pattern"] == pattern]
+        if promoter_only:
+            d = d[d["promoter_buying"]]
+        store: Store = request.app.state.store
+        d = d.sort_values("breakout", ascending=False).head(500)
+        last = store.latest_closes([nse_ticker(s) for s in d["symbol"].unique()])
+        rows = []
+        for r in d.to_dict("records"):
+            r["last_close"] = last.get(nse_ticker(r["symbol"]))
+            r["since_breakout"] = (r["last_close"] / r["breakout_price"] - 1) \
+                if r["last_close"] and r["breakout_price"] else None
+            rows.append({k: r.get(k) for k in [*PATTERN_FIELDS, "company", "last_close",
+                                               "since_breakout"]})
+        return {"rows": service.clean_tree(rows), "through": through}
+
+    @app.get("/api/patterns/stats")
+    def pattern_stats(request: Request) -> dict:
+        det = pattern_data(request)
+        return service.clean_tree({
+            "patterns": patterns.stats(det),
+            "total": len(det),
+            "from": det["breakout"].min() if not det.empty else None,
+            "to": det["breakout"].max() if not det.empty else None,
+        })
+
+    @app.get("/api/patterns/study")
+    def pattern_study(request: Request,
+                      pattern: Annotated[str, Query(pattern=r"^(all|[a-z_]{1,40})$")] = "all",
+                      split: Literal["pattern", "promoter"] = "pattern") -> dict:
+        def run():
+            det = pattern_data(request)
+            if det.empty:
+                return {"before": 20, "after": 120, "groups": []}
+            d = det if pattern == "all" else det[det["pattern"] == pattern]
+            if split == "promoter":
+                label = d["promoter_buying"].map({True: "Promoters buying during the pattern",
+                                                  False: "No promoter buying"})
+            else:
+                label = d["name"]
+            e = d.rename(columns={"breakout": "event_date"})
+            closes, bench = closes_and_bench(request)
+            return research.study_by_label(e, label, closes, bench)
+
+        return cached(request, ("pattern_study", pattern, split), run)
+
     @app.get("/api/people")
     def people(request: Request, f: F,
                min_scored: Annotated[int, Query(ge=1, le=50)] = 3) -> list[dict]:
@@ -455,6 +559,10 @@ def create_app(settings: Settings | None = None,
         pe = pledge_events(request)
         out["pledges"] = service.clean_tree(
             pe[pe["symbol"] == symbol].to_dict("records") if not pe.empty else [])
+        det = pattern_data(request)
+        out["patterns"] = service.clean_tree(
+            det.loc[det["symbol"] == symbol, PATTERN_FIELDS].to_dict("records")
+            if not det.empty else [])
         return out
 
     def known_symbol(request: Request, symbol: str) -> str:

@@ -16,6 +16,7 @@ const PAGES: [string, string, string][] = [
   ["Trades", "/trades", "every promoter trade"],
   ["Stock", "/stock", "most active stock"],
   ["Screener", "/screener", "find stocks"],
+  ["Patterns", "/patterns", "head & shoulders, cup & handle, breakouts"],
   ["Market", "/market", "flow, breadth, sectors"],
   ["Promoters", "/people", "track-record leaderboard"],
   ["Pledges", "/pledges", "pledges and invocations"],

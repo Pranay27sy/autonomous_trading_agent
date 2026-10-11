@@ -224,3 +224,23 @@ def test_saved_screen_alerts_when_a_stock_enters(store):
     assert store.screens()[0]["last_matches"] == ["NEWCO"] and store.screens()[0]["id"] == sid
     store.upsert_trades([trade("Founder", 1e7, symbol="NEWCO", day="2024-03-06")])
     assert alerts.scan(store) == []  # still in the screen: no repeat
+
+
+def test_pattern_breakout_alerts_for_watched_stocks(store, monkeypatch):
+    from promoter_tracker import patterns
+    from tests.test_patterns import path
+
+    alerts.scan(store)  # trade baseline
+    bars = path(100, 120, 105, 132, 105, 120, 90, 85)
+    store.upsert_prices("^NSEI", pd.Series(100.0, index=bars.index[:60]))
+    alerts.scan(store)  # pattern baseline: today's date, nothing older alerts
+    store.watch("ABCLTD")
+    monkeypatch.setattr(store, "load_bars", lambda t: bars)
+    store.upsert_prices("^NSEI", pd.Series(100.0, index=bars.index))  # new price data arrives
+    raised = alerts.scan(store)
+    [hs] = [d for d in patterns.detect("ABCLTD", bars) if d.pattern == "head_shoulders"]
+    # The right side of this shape is also a descending triangle; both alert.
+    title = f"ABCLTD: head and shoulders breakout ↓ at ₹{hs.breakout_price:,.2f}"
+    assert title in [a["title"] for a in raised]
+    assert {a["kind"] for a in raised} == {"pattern"}
+    assert alerts.scan(store) == []  # same prices: nothing new

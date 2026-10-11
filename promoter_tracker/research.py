@@ -165,7 +165,6 @@ def event_study(events: pd.DataFrame, closes: Closes, bench: pd.Series,
     rebased to 0 at day 0, so days before show what happened ahead of the
     trade. groups: "side" (buys vs sells) or "conviction" (buy tiers).
     """
-    px = _Prices(closes, bench.dropna().sort_index())
     e = events[~events["internal_transfer"] & events["returns_valid"]]
     if groups == "conviction":
         e = e[(e["direction"] == "buy") & e["conviction"].notna()]
@@ -173,6 +172,14 @@ def event_study(events: pd.DataFrame, closes: Closes, bench: pd.Series,
                        labels=["Low (0–34)", "Medium (35–59)", "High (60+)"]).astype(str)
     else:
         label = e["direction"].map({"buy": "Promoter buys", "sell": "Promoter sells"})
+    order = ["Promoter buys", "Promoter sells", "High (60+)", "Medium (35–59)", "Low (0–34)"]
+    return study_by_label(e, label, closes, bench, before, after, order)
+
+
+def study_by_label(e: pd.DataFrame, label: pd.Series, closes: Closes, bench: pd.Series,
+                   before: int = 20, after: int = 120, order: list[str] | None = None) -> dict:
+    """Event-study paths for events grouped by `label` (same index as e)."""
+    px = _Prices(closes, bench.dropna().sort_index())
     offsets = np.arange(-before, after + 1)
     out = []
     for name in label.dropna().unique():
@@ -201,7 +208,7 @@ def event_study(events: pd.DataFrame, closes: Closes, bench: pd.Series,
         out.append({"group": name, "events": len(paths), "points": [
             {"day": int(d), "mean": _num(mu), "lo": _num(mu - h), "hi": _num(mu + h), "n": int(k)}
             for d, mu, h, k in zip(offsets, mean, half, n, strict=True) if k >= 5]})
-    order = ["Promoter buys", "Promoter sells", "High (60+)", "Medium (35–59)", "Low (0–34)"]
+    order = order or []
     out.sort(key=lambda g: order.index(g["group"]) if g["group"] in order else 99)
     return {"before": before, "after": after, "groups": out}
 

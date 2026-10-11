@@ -4,7 +4,7 @@ import { Link, Navigate, useLocation, useNavigate, useParams } from "react-route
 import { api, ApiError, type StockDetail, type StockListItem } from "../api";
 import { DataTable } from "../components/DataTable";
 import { PriceChart, type Interval } from "../components/PriceChart";
-import { Card, Empty, ErrorBox, Segmented, Skeleton } from "../components/ui";
+import { Card, Empty, ErrorBox, Segmented, Skeleton, Switch } from "../components/ui";
 import { StockSearch } from "../components/StockSearch";
 import { WatchButton } from "../components/watch";
 import { StockPledges } from "./Pledges";
@@ -36,6 +36,7 @@ function StockView({ symbol, stocks }: { symbol: string; stocks: StockListItem[]
   const [f] = useFilters();
   const { search } = useLocation();
   const [range, setRange] = useState<Range>("1Y");
+  const [showPatterns, setShowPatterns] = useState(true);
   const [interval, setCandleInterval] = useState<Interval>("D");
   // Daily candles get too thin to read over long ranges; switch to weekly there.
   const pickRange = (r: Range) => {
@@ -94,7 +95,8 @@ function StockView({ symbol, stocks }: { symbol: string; stocks: StockListItem[]
           <Card
             title={<span className="legend"><span className="tri-up">▲ promoter buy</span><span className="tri-down">▼ promoter sell</span><span>size = ₹ value</span></span>}
             actions={
-              <span style={{ display: "flex", gap: 8 }}>
+              <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <Switch label="Patterns" checked={showPatterns} onChange={setShowPatterns} title="Chart patterns found by the scanner (see the Patterns page)" />
                 <Segmented
                   label="Candle interval"
                   options={["D", "W"] as const}
@@ -108,7 +110,7 @@ function StockView({ symbol, stocks }: { symbol: string; stocks: StockListItem[]
           >
             {prices.length ? (
               <>
-                <PriceChart bars={prices} trades={trades} interval={interval} />
+                <PriceChart bars={prices} trades={trades} interval={interval} patterns={showPatterns ? q.data.patterns : []} />
                 {prices.some((p) => p.open == null) && (
                   <p className="card-note">
                     Some older bars only have a closing price (they were cached before candles were stored) and show as

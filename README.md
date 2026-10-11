@@ -16,6 +16,27 @@ dark trading-terminal style. Its main pages:
   returns at +1/+5/+20/+60/+120 trading days, raw and relative to Nifty 50. The selected
   stock is in the URL, so links can be shared.
 
+### Chart patterns
+The **Patterns** page scans every stock with promoter filings for classic chart patterns:
+head and shoulders, inverse head and shoulders, double top and double bottom, cup and handle,
+and ascending and descending triangles. Rules are fixed and in
+[`promoter_tracker/patterns.py`](promoter_tracker/patterns.py):
+- Patterns are built from swing highs and lows: a close that is the extreme within 5 trading
+  days either side, and at least 5% away from the previous swing (smaller moves are noise).
+- A pattern counts only when the price closes through its neckline, rim or flat side, after its
+  last swing point was confirmed. Detection never uses future prices, so the backtest numbers
+  are honest.
+
+For each pattern the page shows how often it "worked": the stock moved its way vs Nifty over
+the 60 trading days after the breakout. It splits this by whether promoters were net buyers
+during the pattern, and shows an event study of the average path. On three years of NSE data,
+bearish patterns work slightly more often than not. Bullish ones usually fail a little but
+occasionally win big; cup and handle is the strongest. Promoter buying during a pattern
+doesn't reliably improve it.
+
+Stock charts draw each pattern's swing points, neckline or rim, and breakout. Alerts can fire
+on breakouts in watched stocks, or on bullish breakouts anywhere with promoter buying.
+
 ### Watchlist and alerts
 Click **☆ Watch** on a stock to add it to your watchlist. After every refresh, the app checks
 the newly arrived promoter trades and raises an alert for:

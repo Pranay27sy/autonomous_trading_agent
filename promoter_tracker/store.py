@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS watchlist (
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
-    kind TEXT NOT NULL,          -- watchlist | conviction | big_buy | big_sell | cluster | pledge | screen
+    kind TEXT NOT NULL,          -- see alerts.py: watchlist, conviction, big_buy, cluster, ...
     dedup_key TEXT NOT NULL,     -- trade_key, or symbol:start for clusters
     symbol TEXT NOT NULL,
     company TEXT,
@@ -254,6 +254,18 @@ class Store:
                 "SELECT EXISTS (SELECT 1 FROM prices WHERE ticker = ? AND open IS NULL)",
                 (ticker,)).fetchone()
         return bool(row[0])
+
+    def latest_closes(self, tickers: list[str]) -> dict[str, float]:
+        """ticker -> its most recent close, in one query."""
+        out: dict[str, float] = {}
+        with self._lock:
+            for i in range(0, len(tickers), 500):  # stay under SQLite's variable limit
+                part = tickers[i:i + 500]
+                # SQLite returns the bare `close` from the row holding MAX(date).
+                out.update((t, c) for t, c, _ in self.conn.execute(
+                    f"SELECT ticker, close, MAX(date) FROM prices WHERE ticker IN "  # noqa: S608 (placeholders only)
+                    f"({', '.join('?' * len(part))}) GROUP BY ticker", part))
+        return out
 
     def last_price_date(self, ticker: str) -> str | None:
         with self._lock:
