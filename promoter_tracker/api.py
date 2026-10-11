@@ -461,10 +461,11 @@ def create_app(settings: Settings | None = None,
         if promoter_only:
             d = d[d["promoter_buying"]]
         store: Store = request.app.state.store
+        d = d.sort_values("breakout", ascending=False).head(500)
+        last = store.latest_closes([nse_ticker(s) for s in d["symbol"].unique()])
         rows = []
-        for r in d.sort_values("breakout", ascending=False).head(500).to_dict("records"):
-            px = store.load_prices(nse_ticker(r["symbol"]))
-            r["last_close"] = float(px.iloc[-1]) if len(px) else None
+        for r in d.to_dict("records"):
+            r["last_close"] = last.get(nse_ticker(r["symbol"]))
             r["since_breakout"] = (r["last_close"] / r["breakout_price"] - 1) \
                 if r["last_close"] and r["breakout_price"] else None
             rows.append({k: r.get(k) for k in [*PATTERN_FIELDS, "company", "last_close",

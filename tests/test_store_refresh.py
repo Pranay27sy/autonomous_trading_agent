@@ -304,3 +304,10 @@ def test_filings_nse_deleted_warn_but_do_not_fail_the_refresh(tmp_path):
     assert not res.errors and store.get_meta("last_refresh")
     assert store.failed_filings() == []
     assert any("NURECA" in w for w in res.warnings)
+
+
+def test_latest_closes_in_one_query(tmp_path):
+    store = Store(tmp_path / "t.db")
+    store.upsert_prices("A.NS", pd.Series([1.0, 2.0], index=pd.bdate_range("2024-01-01", periods=2)))
+    store.upsert_prices("B.NS", pd.Series([5.0], index=pd.bdate_range("2024-01-01", periods=1)))
+    assert store.latest_closes(["A.NS", "B.NS", "C.NS"]) == {"A.NS": 2.0, "B.NS": 5.0}

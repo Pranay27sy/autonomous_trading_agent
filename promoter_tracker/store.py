@@ -255,6 +255,18 @@ class Store:
                 (ticker,)).fetchone()
         return bool(row[0])
 
+    def latest_closes(self, tickers: list[str]) -> dict[str, float]:
+        """ticker -> its most recent close, in one query."""
+        out: dict[str, float] = {}
+        with self._lock:
+            for i in range(0, len(tickers), 500):  # stay under SQLite's variable limit
+                part = tickers[i:i + 500]
+                # SQLite returns the bare `close` from the row holding MAX(date).
+                out.update((t, c) for t, c, _ in self.conn.execute(
+                    f"SELECT ticker, close, MAX(date) FROM prices WHERE ticker IN "  # noqa: S608 (placeholders only)
+                    f"({', '.join('?' * len(part))}) GROUP BY ticker", part))
+        return out
+
     def last_price_date(self, ticker: str) -> str | None:
         with self._lock:
             row = self.conn.execute(
