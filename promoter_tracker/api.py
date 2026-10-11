@@ -27,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import alerts as alert_rules
-from . import analysis, notify, patterns, pledges, research, screener, service
+from . import analysis, companies, notify, patterns, pledges, research, screener, service
 from .config import Settings, configure_logging, load_settings
 from .prices import BENCHMARK, nse_ticker
 from .refresh import RefreshInProgress, refresh_all
@@ -38,9 +38,10 @@ log = logging.getLogger(__name__)
 _FROM_SETTINGS = Path("<settings>")
 SYMBOL_RE = re.compile(r"^[A-Z0-9&.\-]{1,20}$")
 PATTERN_FIELDS = ["symbol", "pattern", "name", "direction", "start", "breakout",
-                  "breakout_price", "level", "target", "volume_ratio", "points", "line",
-                  "promoter_buys", "promoter_net_value", "promoter_buying",
-                  "signed_5", "signed_20", "signed_60"]
+                  "breakout_price", "level", "target", "invalidation", "quality",
+                  "quality_reasons", "status", "resolved", "volume_ratio", "trend_move", "bars",
+                  "distance", "points", "line", "promoter_buys", "promoter_net_value",
+                  "promoter_buying", "signed_5", "signed_20", "signed_60"]
 COMPARE_RE = r"^[A-Za-z0-9&.\-]{1,20}(,[A-Za-z0-9&.\-]{1,20}){0,3}$"  # 1-4 symbols
 TEST_ALERT_COOLDOWN = 30  # seconds between test messages
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -57,6 +58,7 @@ class AlertSettingsBody(BaseModel):
     pledge_invocations: bool = True
     pattern_watchlist: bool = True
     pattern_promoter: bool = False
+    pattern_min_quality: int = Field(default=50, ge=0, le=100)
 
 
 class CriteriaBody(BaseModel):
@@ -432,7 +434,8 @@ def create_app(settings: Settings | None = None,
             syms = sorted(set(trades.loc[trades["category"].map(analysis.is_promoter), "symbol"]))
             # From a year before the first disclosure: older history adds work, not insight.
             since = trades["disclosure_date"].min() - pd.Timedelta(days=365)
-            det = patterns.scan(syms, lambda s: store.load_bars(nse_ticker(s)), since)
+            det = patterns.scan(syms, lambda s: store.load_bars(nse_ticker(s)), since,
+                                forming=True)
             events = request.app.state.events.get(True, "disclosure_date")
             det = patterns.with_promoter_context(det, events)
             det = patterns.with_returns(det, lambda s: store.load_prices(nse_ticker(s)),
@@ -448,12 +451,19 @@ def create_app(settings: Settings | None = None,
                         days: Annotated[int, Query(ge=1, le=365)] = 30,
                         direction: Literal["all", "bull", "bear"] = "all",
                         pattern: Annotated[str, Query(pattern=r"^(all|[a-z_]{1,40})$")] = "all",
-                        promoter_only: bool = False) -> dict:
+                        promoter_only: bool = False,
+                        min_quality: Annotated[int, Query(ge=0, le=100)] = 0,
+                        forming: bool = False) -> dict:
+        """Recent breakouts, or (forming=True) patterns complete but not yet broken out."""
         det = pattern_data(request)
         if det.empty:
             return {"rows": [], "through": None}
         through = request.app.state.store.last_price_date(BENCHMARK)
-        d = det[det["breakout"] >= pd.Timestamp(through) - pd.Timedelta(days=days)]
+        if forming:
+            d = det[det["breakout"].isna()]
+        else:
+            d = det[det["breakout"] >= pd.Timestamp(through) - pd.Timedelta(days=days)]
+        d = d[d["quality"] >= min_quality]
         if direction != "all":
             d = d[d["direction"] == direction]
         if pattern != "all":
@@ -461,37 +471,45 @@ def create_app(settings: Settings | None = None,
         if promoter_only:
             d = d[d["promoter_buying"]]
         store: Store = request.app.state.store
-        d = d.sort_values("breakout", ascending=False).head(500)
+        # Forming: closest to breaking out first (the ones worth watching).
+        d = (d.assign(_gap=d["distance"].abs()).sort_values("_gap").drop(columns="_gap") if forming
+             else d.sort_values("breakout", ascending=False)).head(500)
         last = store.latest_closes([nse_ticker(s) for s in d["symbol"].unique()])
         rows = []
         for r in d.to_dict("records"):
             r["last_close"] = last.get(nse_ticker(r["symbol"]))
             r["since_breakout"] = (r["last_close"] / r["breakout_price"] - 1) \
-                if r["last_close"] and r["breakout_price"] else None
+                if r["last_close"] and r.get("breakout_price") else None
             rows.append({k: r.get(k) for k in [*PATTERN_FIELDS, "company", "last_close",
                                                "since_breakout"]})
         return {"rows": service.clean_tree(rows), "through": through}
 
     @app.get("/api/patterns/stats")
-    def pattern_stats(request: Request) -> dict:
+    def pattern_stats(request: Request,
+                      min_quality: Annotated[int, Query(ge=0, le=100)] = 0) -> dict:
         det = pattern_data(request)
+        broke = det[det["breakout"].notna()] if not det.empty else det
         return service.clean_tree({
-            "patterns": patterns.stats(det),
-            "total": len(det),
-            "from": det["breakout"].min() if not det.empty else None,
-            "to": det["breakout"].max() if not det.empty else None,
+            "patterns": patterns.stats(det, min_quality),
+            "total": int((broke["quality"] >= min_quality).sum()) if len(broke) else 0,
+            "forming": int(det["breakout"].isna().sum()) if not det.empty else 0,
+            "from": broke["breakout"].min() if len(broke) else None,
+            "to": broke["breakout"].max() if len(broke) else None,
         })
 
     @app.get("/api/patterns/study")
     def pattern_study(request: Request,
                       pattern: Annotated[str, Query(pattern=r"^(all|[a-z_]{1,40})$")] = "all",
-                      split: Literal["pattern", "promoter"] = "pattern") -> dict:
+                      split: Literal["pattern", "promoter", "quality"] = "pattern") -> dict:
         def run():
             det = pattern_data(request)
             if det.empty:
                 return {"before": 20, "after": 120, "groups": []}
-            d = det if pattern == "all" else det[det["pattern"] == pattern]
-            if split == "promoter":
+            d = det[det["breakout"].notna()]
+            d = d if pattern == "all" else d[d["pattern"] == pattern]
+            if split == "quality":
+                label = d["quality"].map(lambda q: f"{patterns.tier(q)} quality")
+            elif split == "promoter":
                 label = d["promoter_buying"].map({True: "Promoters buying during the pattern",
                                                   False: "No promoter buying"})
             else:
@@ -552,10 +570,24 @@ def create_app(settings: Settings | None = None,
         if not SYMBOL_RE.match(symbol):
             raise HTTPException(422, "Not an NSE symbol")
         events, _ = events_for(request, f)
+        store: Store = request.app.state.store
+        bars = store.load_bars(nse_ticker(symbol))
+        about = None
         if events.empty or symbol not in set(events["symbol"]):
-            raise HTTPException(404, f"No promoter trades for {symbol}")
-        bars = request.app.state.store.load_bars(nse_ticker(symbol))
-        out = service.stock(events, symbol, f.sides or ("buy", "sell"), bars, f.exclude_transfers)
+            # No trades under these filters (e.g. only pledges or off-market filings): still
+            # show the chart, patterns and pledges if we know the stock at all.
+            filings = store.load_trades()
+            filings = filings[filings["symbol"] == symbol] if not filings.empty else filings
+            if filings.empty and bars.empty:
+                raise HTTPException(404, f"No promoter filings or prices for {symbol}")
+            info = store.company_info()
+            row = info.loc[symbol] if symbol in info.index else {}
+            about = {"company": filings["company"].iloc[0] if len(filings) else row.get("name"),
+                     "sector": row.get("sector"), "industry": row.get("industry"),
+                     "market_cap": row.get("market_cap"),
+                     "cap_bucket": companies.bucket(row.get("market_cap"))}
+        out = service.stock(events, symbol, f.sides or ("buy", "sell"), bars, f.exclude_transfers,
+                            about)
         pe = pledge_events(request)
         out["pledges"] = service.clean_tree(
             pe[pe["symbol"] == symbol].to_dict("records") if not pe.empty else [])

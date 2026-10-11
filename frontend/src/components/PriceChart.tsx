@@ -141,7 +141,8 @@ export function PriceChart({
   const patternsByBar = useMemo(() => {
     const out = new Map<string, PatternRow[]>();
     for (const p of shown) {
-      const i = asofIndex(candles, p.breakout);
+      // Forming patterns are marked on the latest bar.
+      const i = p.breakout ? asofIndex(candles, p.breakout) : candles.length - 1;
       if (i < 0) continue;
       const t = candles[i]!.time;
       out.set(t, [...(out.get(t) ?? []), p]);
@@ -218,7 +219,7 @@ export function PriceChart({
       return i < 0 ? null : candles[i]!.time;
     };
     for (const p of shown) {
-      const color = PATTERN_COLORS[p.direction];
+      const color = p.status === "forming" ? COLORS.accent : PATTERN_COLORS[p.direction];
       const quiet = { lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false };
       const pts = [...new Map(p.points.map((x) => [snap(x.time), x.price])).entries()].filter(
         (e): e is [string, number] => e[0] != null,
@@ -238,13 +239,14 @@ export function PriceChart({
     }
     for (const [time, group] of patternsByBar) {
       for (const p of group) {
+        const forming = p.status === "forming";
         markers.push({
           time: time as Time,
           position: p.direction === "bull" ? "belowBar" : "aboveBar",
           shape: "circle",
-          color: PATTERN_COLORS[p.direction],
+          color: forming ? COLORS.accent : PATTERN_COLORS[p.direction],
           size: 0.6,
-          text: PATTERN_SHORT[p.pattern] ?? p.name,
+          text: `${PATTERN_SHORT[p.pattern] ?? p.name}${forming ? " forming" : ""} ${p.quality}`,
         });
       }
     }
@@ -308,7 +310,10 @@ export function PriceChart({
                 {p.direction === "bull" ? "↑" : "↓"} pattern
               </span>
               <span>
-                {p.name} breakout through {fmtPrice(p.level)} · target {fmtPrice(p.target)}
+                {p.status === "forming"
+                  ? `${p.name} forming: breaks at ${fmtPrice(p.level)}`
+                  : `${p.name} breakout through ${fmtPrice(p.level)} · target ${fmtPrice(p.target)} · ${p.status.replace("_", " ")}`}{" "}
+                · quality {p.quality}
               </span>
             </div>
           ))}

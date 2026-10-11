@@ -45,6 +45,38 @@ export function ConvictionBadge({ score, reasons }: { score: number | null; reas
   );
 }
 
+/** 0–100 score with a bar (same look as conviction); the reasons show on hover. */
+export function QualityBadge({ score, reasons }: { score: number | null; reasons?: string[] }) {
+  if (score == null) return <span className="faint">–</span>;
+  const tier = score >= 70 ? "hi" : score >= 50 ? "mid" : "lo";
+  const why = reasons?.length ? `Quality ${score}/100:\n• ${reasons.join("\n• ")}` : `Quality ${score}/100`;
+  return (
+    <span className={`conviction ${tier}`} title={why} aria-label={why}>
+      <span className="conviction-bar">
+        <span style={{ width: `${score}%` }} />
+      </span>
+      <span className="mono">{score}</span>
+    </span>
+  );
+}
+
+const STATUS = {
+  forming: ["forming", "neutral", "Shape complete; waiting for a breakout"],
+  active: ["active", "neutral", "Broke out; neither target nor invalidation reached yet"],
+  target_hit: ["target hit", "buy", "Reached the textbook target before failing"],
+  failed: ["failed", "sell", "Price went back past the invalidation level first"],
+  expired: ["expired", "neutral", "Neither target nor invalidation within a year"],
+} as const;
+
+export function StatusChip({ status }: { status: keyof typeof STATUS }) {
+  const [label, tone, title] = STATUS[status];
+  return (
+    <span className={`chip ${tone}`} title={title}>
+      {label}
+    </span>
+  );
+}
+
 export function SideChip({ side }: { side: Side }) {
   return <span className={`chip ${side}`}>{side}</span>;
 }

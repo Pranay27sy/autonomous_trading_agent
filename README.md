@@ -19,23 +19,31 @@ dark trading-terminal style. Its main pages:
 ### Chart patterns
 The **Patterns** page scans every stock with promoter filings for classic chart patterns:
 head and shoulders, inverse head and shoulders, double top and double bottom, cup and handle,
-and ascending and descending triangles. Rules are fixed and in
+and ascending and descending triangles. The rules are explicit and live in
 [`promoter_tracker/patterns.py`](promoter_tracker/patterns.py):
-- Patterns are built from swing highs and lows: a close that is the extreme within 5 trading
-  days either side, and at least 5% away from the previous swing (smaller moves are noise).
-- A pattern counts only when the price closes through its neckline, rim or flat side, after its
-  last swing point was confirmed. Detection never uses future prices, so the backtest numbers
-  are honest.
+- **Swing points:** a day's high (or low) that is the extreme within 5 trading days either
+  side. A swing must move at least 2.5× the stock's average daily range (ATR), between 3% and
+  15%, so calm and volatile stocks are each judged on their own terms.
+- **Context:** reversals need something to reverse. A head and shoulders or double top needs a
+  15%+ rise into it (bottoms a fall), and a cup and handle a 25%+ advance.
+- **Shape rules:** shoulders match in height *and* timing; minimum and maximum durations;
+  triangles need five swings (three touches on one side) and a narrowing range.
+- **Breakout:** the first close beyond the neckline, rim or flat side by half a day's typical
+  range, after the last swing could have been known. Nothing looks into the future, so the
+  measured results are honest.
+- **Quality (0–100):** how textbook the pattern is (trend into it, shape, prominence, breakout
+  strength, volume, duration), with reasons. On three years of data, higher quality did **not**
+  predict better returns. It measures how clean a pattern looks, not whether it will work.
+- **Lifecycle:** *forming* (shape complete, waiting for a breakout), then *target hit* (the
+  textbook measured move) or *failed* (price went back past the invalidation level), whichever
+  came first. One label per formation: overlapping detections keep the best-scoring one.
 
-For each pattern the page shows how often it "worked": the stock moved its way vs Nifty over
-the 60 trading days after the breakout. It splits this by whether promoters were net buyers
-during the pattern, and shows an event study of the average path. On three years of NSE data,
-bearish patterns work slightly more often than not. Bullish ones usually fail a little but
-occasionally win big; cup and handle is the strongest. Promoter buying during a pattern
-doesn't reliably improve it.
-
-Stock charts draw each pattern's swing points, neckline or rim, and breakout. Alerts can fire
-on breakouts in watched stocks, or on bullish breakouts anywhere with promoter buying.
+The page shows how often each pattern "worked" (the stock moved its way vs Nifty over 60
+trading days after the breakout), its target-hit rate, splits by quality tier and by promoter
+buying during the pattern, an event study, recent breakouts, and patterns forming now
+(closest to breaking out first). Stock charts draw each pattern's swings, neckline or rim and
+breakout. Alerts can fire on breakouts above a chosen quality, in watched stocks or, with
+promoter buying, in any stock.
 
 ### Watchlist and alerts
 Click **☆ Watch** on a stock to add it to your watchlist. After every refresh, the app checks

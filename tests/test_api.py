@@ -380,3 +380,36 @@ def test_concurrent_requests_share_one_computation(client, monkeypatch):
     for t in threads:
         t.join()
     assert results == [200, 200, 200] and len(calls) == 1
+
+
+def test_pattern_quality_filter_and_forming(client):
+    from tests.test_patterns import path
+
+    bars = path(100, 120, 105, 132, 105, 120, 90, 85)
+    # Right shoulder at bar 75 (confirmed at 80); the neckline breaks around bar 83.
+    cut = bars.iloc[:82]
+    client.app.state.store.load_bars = lambda t: cut if t == "ABCLTD.NS" else bars.iloc[:0]
+    client.app.state.store.mark_refreshed()  # new data version
+    forming = client.get("/api/patterns/recent", params={"forming": True}).json()["rows"]
+    assert [(r["symbol"], r["status"]) for r in forming] == [("ABCLTD", "forming")]
+    assert forming[0]["breakout"] is None and forming[0]["quality"] > 0
+    strict = client.get("/api/patterns/recent", params={"forming": True, "min_quality": 100})
+    assert strict.json()["rows"] == []
+    stats = client.get("/api/patterns/stats", params={"min_quality": 50}).json()
+    assert stats["forming"] == 1
+    assert client.get("/api/patterns/study", params={"split": "quality"}).status_code == 200
+
+
+def test_stock_page_works_without_matching_trades(client):
+    store = client.app.state.store
+    store.upsert_trades([{"symbol": "PLEDGEONLY", "company": "Pledge Only Ltd", "person": "Owner",
+                          "category": "Promoters", "quantity": 1000.0, "value": 47.0,
+                          "txn_type": "Pledge", "mode": "Pledge Creation",
+                          "disclosure_date": "2024-02-01", "trade_to": "2024-02-01"}])
+    days = pd.bdate_range("2024-01-01", periods=2)
+    store.upsert_prices("PLEDGEONLY.NS", pd.Series([10.0, 11.0], index=days))
+    store.mark_refreshed()
+    body = client.get("/api/stocks/PLEDGEONLY", params=ALL).json()
+    assert body["company"] == "Pledge Only Ltd" and body["trades"] == [] and len(body["prices"]) == 2
+    assert [p["kind"] for p in body["pledges"]] == ["created"]
+    assert client.get("/api/stocks/NOPE", params=ALL).status_code == 404  # unknown stays 404

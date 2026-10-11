@@ -39,6 +39,7 @@ class AlertSettings:
     min_conviction: int | None = None      # high-conviction buy in any stock; None = off
     pattern_watchlist: bool = True         # chart-pattern breakouts in watched stocks
     pattern_promoter: bool = False         # bullish breakouts with promoter buying, any stock
+    pattern_min_quality: int = 50          # only patterns scoring at least this (0-100)
     pledge_invocations: bool = True        # lender invoked pledged promoter shares (any stock);
                                            # watched stocks also alert on new pledges
 
@@ -292,7 +293,8 @@ def pattern_alerts(store: Store, s: AlertSettings) -> list[dict]:
         return []
     det = patterns.scan(sorted(symbols), lambda sym: store.load_bars(nse_ticker(sym)),
                         since=end - pd.Timedelta(days=730))
-    det = det[det["breakout"] > pd.Timestamp(mark)] if not det.empty else det
+    if not det.empty:
+        det = det[(det["breakout"] > pd.Timestamp(mark)) & (det["quality"] >= s.pattern_min_quality)]
     det = patterns.with_promoter_context(det, events)
     out = []
     for _, d in det.iterrows():
@@ -310,6 +312,7 @@ def pattern_alerts(store: Store, s: AlertSettings) -> list[dict]:
             "value": float(d["promoter_net_value"]) or None,
             "event_date": pd.Timestamp(d["breakout"]).date().isoformat(),
             "title": f"{d['symbol']}: {d['name'].lower()} breakout {arrow} at ₹{d['breakout_price']:,.2f}",
-            "detail": f"through ₹{d['level']:,.2f} · textbook target ₹{d['target']:,.2f}{flow}",
+            "detail": f"quality {d['quality']}/100 · through ₹{d['level']:,.2f} · "
+                      f"textbook target ₹{d['target']:,.2f}{flow}",
         })
     return out

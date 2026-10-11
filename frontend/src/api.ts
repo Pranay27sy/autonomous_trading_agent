@@ -199,6 +199,7 @@ export interface AlertRules {
   pledge_invocations: boolean;
   pattern_watchlist: boolean;
   pattern_promoter: boolean;
+  pattern_min_quality: number;
 }
 
 export interface AlertSettings {
@@ -463,12 +464,24 @@ export interface PatternRow {
   name: string;
   direction: "bull" | "bear";
   start: string;
-  breakout: string;
-  breakout_price: number;
-  /** neckline / rim / flat side at the breakout */
+  /** null while the pattern is still forming */
+  breakout: string | null;
+  breakout_price: number | null;
+  /** neckline / rim / flat side at the breakout (or today, while forming) */
   level: number;
   /** textbook measured-move target */
   target: number;
+  /** price beyond which the pattern has failed */
+  invalidation: number;
+  /** 0–100: how textbook the formation is (not a prediction) */
+  quality: number;
+  quality_reasons: string[];
+  status: "forming" | "active" | "target_hit" | "failed" | "expired";
+  resolved: string | null;
+  trend_move: number | null;
+  bars: number;
+  /** forming only: last close vs the level */
+  distance: number | null;
   volume_ratio: number | null;
   points: { time: string; price: number; label: string }[];
   line: { time: string; price: number }[];
@@ -490,6 +503,8 @@ export interface PatternPerf {
   mean_60: number | null;
   median_60: number | null;
   worked_60: number | null;
+  /** of resolved patterns, the share that reached the target before failing */
+  target_hit: number | null;
 }
 
 export interface PatternStats {
@@ -501,8 +516,10 @@ export interface PatternStats {
     all: PatternPerf;
     promoter: PatternPerf;
     no_promoter: PatternPerf;
+    tiers: Record<"High" | "Medium" | "Low", PatternPerf>;
   }[];
   total: number;
+  forming: number;
   from: string | null;
   to: string | null;
 }
@@ -558,12 +575,12 @@ export const api = {
     }),
   sectors: (f: Filters) => request<Sectors>(withFilters("/api/sectors", f)),
   market: (f: Filters) => request<MarketFlow>(withFilters("/api/market", f)),
-  recentPatterns: (days: number, direction: string, pattern: string, promoterOnly: boolean) =>
+  recentPatterns: (days: number, direction: string, pattern: string, promoterOnly: boolean, minQuality: number, forming = false) =>
     request<{ rows: PatternRow[]; through: string | null }>(
-      `/api/patterns/recent?days=${days}&direction=${direction}&pattern=${pattern}&promoter_only=${promoterOnly}`,
+      `/api/patterns/recent?days=${days}&direction=${direction}&pattern=${pattern}&promoter_only=${promoterOnly}&min_quality=${minQuality}&forming=${forming}`,
     ),
-  patternStats: () => request<PatternStats>("/api/patterns/stats"),
-  patternStudy: (pattern: string, split: "pattern" | "promoter") =>
+  patternStats: (minQuality = 0) => request<PatternStats>(`/api/patterns/stats?min_quality=${minQuality}`),
+  patternStudy: (pattern: string, split: "pattern" | "promoter" | "quality") =>
     request<EventStudy>(`/api/patterns/study?pattern=${pattern}&split=${split}`),
   screenPresets: () => request<Record<string, Partial<ScreenCriteria>>>("/api/screener/presets"),
   runScreen: (c: ScreenCriteria, f: Filters) =>
