@@ -20,6 +20,13 @@ export interface Trade {
   holding_change_pct: number | null;
   disclosure_date: string | null;
   trade_to: string | null;
+  /** One promoter-group member selling to another (see analysis.internal_transfers). */
+  internal_transfer: boolean;
+  sector: string | null;
+  cap_bucket: string | null;
+  /** 0–100 for buys (see conviction.py); null for sells and transfers. */
+  conviction: number | null;
+  conviction_reasons: string[];
   ret_1: number | null;
   ret_5: number | null;
   ret_20: number | null;
@@ -84,6 +91,7 @@ export interface Overview {
   clusters: Cluster[];
   top_buyers: Leader[];
   top_sellers: Leader[];
+  top_conviction: Trade[];
 }
 
 export interface StockListItem {
@@ -105,6 +113,10 @@ export interface Bar {
 export interface StockDetail {
   symbol: string;
   company: string | null;
+  sector: string | null;
+  industry: string | null;
+  market_cap: number | null;
+  cap_bucket: string | null;
   kpis: {
     last_close: number | null;
     last_date: string | null;
@@ -119,6 +131,7 @@ export interface StockDetail {
   };
   prices: Bar[];
   trades: Trade[];
+  pledges: PledgeEvent[];
 }
 
 export interface RefreshStatus {
@@ -156,7 +169,7 @@ export interface WatchItem {
   change_1m: number | null;
 }
 
-export type AlertKind = "watchlist" | "big_buy" | "big_sell" | "cluster";
+export type AlertKind = "watchlist" | "conviction" | "big_buy" | "big_sell" | "cluster" | "pledge" | "screen";
 
 export interface Alert {
   id: number;
@@ -181,12 +194,255 @@ export interface AlertRules {
   cluster_min_people: number | null;
   cluster_window_days: number;
   market_only: boolean;
+  min_conviction: number | null;
+  pledge_invocations: boolean;
 }
 
 export interface AlertSettings {
   rules: AlertRules;
   /** Which delivery channels the server has configured (secrets stay on the server). */
   channels: { telegram: boolean; email: boolean };
+}
+
+export interface BacktestRule {
+  side: Side;
+  hold_days: number;
+  min_value: number;
+  min_conviction: number | null;
+  min_stake_pct: number | null;
+  sectors: string[];
+  caps: string[];
+  start: string | null;
+  end: string | null;
+  one_per_stock_days: number;
+}
+
+export interface BacktestTrade {
+  symbol: string;
+  company: string | null;
+  person: string | null;
+  event_date: string;
+  entry: string;
+  exit: string;
+  value: number | null;
+  conviction: number | null;
+  return: number | null;
+  benchmark: number | null;
+  excess: number | null;
+}
+
+export interface BacktestResult {
+  stats: {
+    trades: number;
+    stocks?: number;
+    hit_rate?: number;
+    mean_return?: number;
+    median_return?: number;
+    mean_excess?: number | null;
+    median_excess?: number | null;
+    excess_ci95?: [number | null, number | null];
+    t_stat?: number | null;
+    best?: number;
+    worst?: number;
+    strategy_total?: number;
+    benchmark_total?: number;
+    strategy_cagr?: number;
+    benchmark_cagr?: number;
+    max_drawdown?: number;
+    benchmark_max_drawdown?: number;
+    time_invested?: number;
+    from?: string;
+    to?: string;
+  };
+  equity: { time: string; strategy: number; benchmark: number }[];
+  trades: BacktestTrade[];
+}
+
+export interface EventStudy {
+  before: number;
+  after: number;
+  groups: {
+    group: string;
+    events: number;
+    points: { day: number; mean: number | null; lo: number | null; hi: number | null; n: number }[];
+  }[];
+}
+
+export interface FlowRow {
+  buy_value: number;
+  sell_value: number;
+  net_value: number;
+  trades: number;
+  stocks: number;
+  stocks_net_buying: number;
+  top_buy: string | null;
+}
+
+export interface Sectors {
+  sectors: (FlowRow & { sector: string })[];
+  caps: (FlowRow & { bucket: string })[];
+  classified_share: number | null;
+}
+
+interface TrackRecord {
+  exc_20: number | null;
+  hit_20: number | null;
+  n_20: number;
+  exc_60: number | null;
+  hit_60: number | null;
+  n_60: number;
+  exc_120: number | null;
+  hit_120: number | null;
+  n_120: number;
+}
+
+export interface PersonRow extends TrackRecord {
+  slug: string;
+  name: string;
+  companies: number;
+  top_company: string | null;
+  trades: number;
+  buys: number;
+  sells: number;
+  buy_value: number;
+  net_value: number;
+  last_trade: string | null;
+}
+
+export interface PersonProfile {
+  slug: string;
+  name: string;
+  aliases: string[];
+  category: string | null;
+  trades: number;
+  buy_value: number;
+  sell_value: number;
+  track: TrackRecord;
+  companies: {
+    symbol: string;
+    company: string | null;
+    trades: number;
+    net_value: number;
+    first: string;
+    last: string;
+    holding_after_pct: number | null;
+  }[];
+  trades_list: Trade[];
+}
+
+export interface PledgeEvent {
+  symbol: string;
+  company: string | null;
+  person: string | null;
+  kind: "created" | "released" | "invoked";
+  quantity: number | null;
+  /** quantity × that day's close (the filed value is unreliable) */
+  value: number | null;
+  event_date: string;
+  trade_key: string;
+}
+
+export interface PledgeCompany {
+  symbol: string;
+  company: string | null;
+  events: number;
+  promoters: number;
+  created_shares: number;
+  released_shares: number;
+  invoked_shares: number;
+  created_value: number;
+  released_value: number;
+  invoked_value: number;
+  net_shares: number;
+  net_pct: number | null;
+  invocations: number;
+  last_event: string;
+  last_kind: PledgeEvent["kind"];
+  risk: "high" | "rising" | "flat" | "easing";
+}
+
+export interface PledgeSummary {
+  totals: Record<PledgeEvent["kind"], { events: number; value: number; companies: number }>;
+  companies: PledgeCompany[];
+  events: PledgeEvent[];
+}
+
+export interface MarketFlow {
+  weekly: {
+    week: string;
+    buy_value: number;
+    sell_value: number;
+    net_value: number;
+    trades: number;
+    stocks_net_buying: number;
+    stocks_net_selling: number;
+    nifty: number | null;
+  }[];
+  daily: { day: string; net_value: number; trades: number }[];
+  timing: { group: string; weeks: number; avg_net_value: number; nifty_next: number; nifty_up_share: number }[];
+  timing_weeks: number;
+  totals: { weeks: number; net_buying_weeks: number; avg_breadth: number; avg_sellers: number } | null;
+}
+
+export interface CompareStock {
+  symbol: string;
+  company: string | null;
+  sector: string | null;
+  path: { time: string; value: number }[];
+  trades: { time: string; direction: Side; value: number | null; person: string | null; conviction: number | null }[];
+  stats: {
+    return: number;
+    volatility: number | null;
+    max_drawdown: number;
+    net_value: number;
+    buys: number;
+    sells: number;
+    max_conviction: number | null;
+  } | null;
+}
+
+export interface ScreenCriteria {
+  lookback_days: number;
+  min_net_value: number | null;
+  min_buys: number | null;
+  min_promoters: number | null;
+  min_conviction: number | null;
+  /** 0.2 = at least 20% below the 52-week high */
+  min_below_high: number | null;
+  max_change_3m: number | null;
+  sectors: string[];
+  caps: string[];
+  exclude_pledge_risk: boolean;
+  sort: "net_value" | "conviction" | "below_high" | "promoters" | "change_3m";
+}
+
+export interface ScreenRow {
+  symbol: string;
+  company: string | null;
+  sector: string | null;
+  cap_bucket: string | null;
+  net_value: number;
+  buys: number;
+  sells: number;
+  promoters: number;
+  conviction: number | null;
+  last_trade: string;
+  last_direction: Side;
+  last_close: number | null;
+  change_1m: number | null;
+  change_3m: number | null;
+  below_high: number | null;
+  pledge_risk: "high" | "rising" | "flat" | "easing" | null;
+  watching: boolean;
+}
+
+export interface SavedScreen {
+  id: number;
+  name: string;
+  criteria: Partial<ScreenCriteria>;
+  alert: boolean;
+  last_matches: string[] | null;
+  created_at: string;
 }
 
 export class ApiError extends Error {
@@ -238,6 +494,45 @@ export const api = {
     request<{ symbol: string; watching: boolean }>(`/api/watchlist/${encodeURIComponent(symbol)}`, {
       method: "DELETE",
     }),
+  sectors: (f: Filters) => request<Sectors>(withFilters("/api/sectors", f)),
+  market: (f: Filters) => request<MarketFlow>(withFilters("/api/market", f)),
+  screenPresets: () => request<Record<string, Partial<ScreenCriteria>>>("/api/screener/presets"),
+  runScreen: (c: ScreenCriteria, f: Filters) =>
+    request<{ rows: ScreenRow[]; count: number }>(`/api/screener/run?market_only=${f.marketOnly}&basis=${f.basis}`, {
+      method: "POST",
+      json: c,
+    }),
+  screens: () => request<SavedScreen[]>("/api/screens"),
+  saveScreen: (name: string, criteria: ScreenCriteria, alert: boolean) =>
+    request<{ id: number; name: string; matches: number }>("/api/screens", { method: "POST", json: { name, criteria, alert } }),
+  deleteScreen: (id: number) => request<{ deleted: number }>(`/api/screens/${id}`, { method: "DELETE" }),
+  compare: (symbols: string[], days: number | null, f: Filters) =>
+    request<{ start: string; end: string; stocks: CompareStock[] }>(
+      withFilters("/api/compare", { ...f, period: "All" }, { symbols: symbols.join(","), ...(days ? { days: String(days) } : {}) }),
+    ),
+  pledges: (period: string) => request<PledgeSummary>(`/api/pledges?period=${encodeURIComponent(period)}`),
+  people: (f: Filters) => request<PersonRow[]>(withFilters("/api/people", f)),
+  person: (slug: string, f: Filters) =>
+    request<PersonProfile>(withFilters(`/api/people/${encodeURIComponent(slug)}`, f)),
+  backtest: (r: BacktestRule, f: Filters) => {
+    const p = new URLSearchParams({
+      side: r.side,
+      hold_days: String(r.hold_days),
+      min_value: String(r.min_value),
+      one_per_stock_days: String(r.one_per_stock_days),
+      market_only: String(f.marketOnly),
+      basis: f.basis,
+    });
+    if (r.min_conviction != null && r.side === "buy") p.set("min_conviction", String(r.min_conviction));
+    if (r.min_stake_pct != null) p.set("min_stake_pct", String(r.min_stake_pct));
+    if (r.sectors.length) p.set("sectors", r.sectors.join(","));
+    if (r.caps.length) p.set("caps", r.caps.join(","));
+    if (r.start) p.set("start", r.start);
+    if (r.end) p.set("end", r.end);
+    return request<BacktestResult>(`/api/research/backtest?${p}`);
+  },
+  eventStudy: (groups: "side" | "conviction", f: Filters) =>
+    request<EventStudy>(`/api/research/event-study?groups=${groups}&market_only=${f.marketOnly}&basis=${f.basis}`),
   alerts: (limit = 100) => request<{ unread: number; alerts: Alert[] }>(`/api/alerts?limit=${limit}`),
   markRead: (ids?: number[]) =>
     request<{ unread: number }>("/api/alerts/read", { method: "POST", json: ids ? { ids } : {} }),

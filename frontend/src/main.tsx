@@ -15,6 +15,9 @@ import { Layout } from "./components/Layout";
 import { Empty } from "./components/ui";
 import { Alerts } from "./pages/Alerts";
 import { Overview } from "./pages/Overview";
+import { People, Person } from "./pages/People";
+import { Pledges } from "./pages/Pledges";
+import { Screener } from "./pages/Screener";
 import { Trades } from "./pages/Trades";
 import { Watchlist } from "./pages/Watchlist";
 
@@ -29,6 +32,9 @@ const queryClient = new QueryClient({
 });
 
 const stockPage = () => import("./pages/Stock").then((m) => ({ Component: m.Stock }));
+const researchPage = () => import("./pages/Research").then((m) => ({ Component: m.Research }));
+const marketPage = () => import("./pages/Market").then((m) => ({ Component: m.Market }));
+const comparePage = () => import("./pages/Compare").then((m) => ({ Component: m.Compare }));
 
 const router = createBrowserRouter([
   {
@@ -37,6 +43,13 @@ const router = createBrowserRouter([
       { index: true, element: <Overview /> },
       { path: "trades", element: <Trades /> },
       { path: "watchlist", element: <Watchlist /> },
+      { path: "research", lazy: researchPage },
+      { path: "market", lazy: marketPage },
+      { path: "compare", lazy: comparePage },
+      { path: "people", element: <People /> },
+      { path: "pledges", element: <Pledges /> },
+      { path: "screener", element: <Screener /> },
+      { path: "people/:slug", element: <Person /> },
       { path: "alerts", element: <Alerts /> },
       // The stock page carries the charting library; load it on first visit.
       { path: "stock", lazy: stockPage },

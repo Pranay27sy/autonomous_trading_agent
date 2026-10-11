@@ -128,7 +128,7 @@ export function ExcessChart({ summary }: { summary: SummaryRow[] }) {
   );
 }
 
-function niceTicks(lo: number, hi: number, count: number): number[] {
+export function niceTicks(lo: number, hi: number, count: number): number[] {
   const span = hi - lo;
   const raw = span / count;
   const mag = 10 ** Math.floor(Math.log10(raw));

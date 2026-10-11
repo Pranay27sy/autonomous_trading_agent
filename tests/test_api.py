@@ -230,3 +230,115 @@ def test_cross_site_writes_are_refused(client):
     same = {"Origin": "http://testserver"}
     assert client.put("/api/watchlist/ABCLTD", headers=same).status_code == 200
     assert client.get("/api/status", headers=evil).status_code == 200  # reads are fine
+
+
+def test_sectors_and_cap_buckets(tmp_path):
+    db = tmp_path / "t.db"
+    seed(db)
+    store = Store(db)
+    store.upsert_company_info("ABCLTD", {"sector": "Industrials", "market_cap": 6e11})
+    store.upsert_company_info("XYZIND", {"sector": "Energy", "market_cap": 3e10})
+    store.close()
+    with TestClient(api.create_app(Settings(db_path=db, auto_refresh=False), frontend_dist=None)) as c:
+        body = c.get("/api/sectors", params=ALL).json()
+        by = {r["sector"]: r for r in body["sectors"]}
+        assert by["Industrials"]["buy_value"] == 25e5 + 13e5 and by["Industrials"]["top_buy"] == "ABCLTD"
+        assert by["Energy"]["net_value"] == -4e7 and "Unclassified" in by  # NEWFMT has no info
+        assert [r["bucket"] for r in body["caps"]] == ["Large cap", "Small cap", "Unknown"]
+        stock = c.get("/api/stocks/ABCLTD", params=ALL).json()
+        assert stock["sector"] == "Industrials" and stock["cap_bucket"] == "Large cap"
+
+
+def test_research_endpoints(client):
+    bt = client.get("/api/research/backtest", params={"hold_days": 20, "min_value": 0}).json()
+    assert bt["stats"]["trades"] >= 1 and bt["equity"] and "excess" in bt["trades"][0]
+    assert client.get("/api/research/backtest", params={"hold_days": 0}).status_code == 422
+    assert client.get("/api/research/backtest", params={"start": "yesterday"}).status_code == 422
+    es = client.get("/api/research/event-study").json()
+    assert {g["group"] for g in es["groups"]} <= {"Promoter buys", "Promoter sells"}
+    again = client.get("/api/research/backtest", params={"hold_days": 20, "min_value": 0}).json()
+    assert again == bt  # served from the cache
+
+
+def test_people_leaderboard_and_profile(client):
+    people = client.get("/api/people", params={**ALL, "min_scored": 1}).json()
+    ravi = next(p for p in people if p["slug"] == "ravi-kumar")
+    assert ravi["companies"] == 1 and ravi["buys"] == 1 and ravi["n_60"] == 1
+    assert people[0]["exc_60"] >= people[1]["exc_60"]  # ranked by track record
+    prof = client.get("/api/people/ravi-kumar", params=ALL).json()
+    assert prof["name"] == "Ravi Kumar" and prof["companies"][0]["symbol"] == "ABCLTD"
+    assert [t["person"] for t in prof["trades_list"]] == ["Ravi Kumar"]
+    assert client.get("/api/people/nobody", params=ALL).status_code == 404
+    assert client.get("/api/people/BAD SLUG!").status_code == 422
+
+
+def test_person_slug_merges_spelling_variants():
+    from promoter_tracker.service import person_slug
+    assert person_slug("Ravi  Kumar.") == person_slug("RAVI KUMAR") == "ravi-kumar"
+
+
+def test_track_record_ranking_prefers_consistency_over_small_lucky_samples():
+    import pandas as pd
+
+    from promoter_tracker import service
+
+    def buys(name, n, exc):
+        return [{"person": name, "symbol": name, "company": name, "direction": "buy", "value": 1e7,
+                 "signed_value": 1e7, "event_date": pd.Timestamp("2024-01-01"),
+                 "exc_20": exc, "exc_60": exc, "exc_120": exc} for _ in range(n)]
+
+    view = pd.DataFrame(buys("Lucky", 3, 0.5) + buys("Steady", 40, 0.2))
+    assert [p["name"] for p in service.people(view)] == ["Steady", "Lucky"]
+
+
+def test_pledges_endpoint_and_stock_pledges(tmp_path):
+    db = tmp_path / "t.db"
+    seed(db)
+    store = Store(db)
+    store.upsert_trades([{"symbol": "ABCLTD", "company": "ABC Limited", "person": "Ravi Kumar",
+                          "category": "Promoters", "quantity": 1000.0, "value": 47.0,
+                          "txn_type": "Pledge Invoke", "mode": "Invocation of pledge",
+                          "disclosure_date": "2024-02-01", "trade_to": "2024-02-01"}])
+    store.mark_refreshed()
+    store.close()
+    with TestClient(api.create_app(Settings(db_path=db, auto_refresh=False), frontend_dist=None)) as c:
+        body = c.get("/api/pledges", params={"period": "All"}).json()
+        assert body["totals"]["invoked"]["events"] == 1 and body["companies"][0]["risk"] == "high"
+        assert body["events"][0]["value"] > 1000  # valued at the close, not the filed 47
+        stock = c.get("/api/stocks/ABCLTD", params=ALL).json()
+        assert [p["kind"] for p in stock["pledges"]] == ["invoked"]
+
+
+def test_market_flow(client):
+    body = client.get("/api/market", params=ALL).json()
+    weeks = {w["week"]: w for w in body["weekly"]}
+    assert sum(w["trades"] for w in weeks.values()) == 4
+    jan14 = weeks["2024-01-14"]  # Sita's buy on 12 Jan
+    assert jan14["stocks_net_buying"] == 1 and jan14["nifty"] > 0
+    assert {d["day"] for d in body["daily"]} >= {"2024-01-05", "2024-01-12"}
+    assert body["totals"]["weeks"] == len(body["weekly"])
+
+
+def test_compare(client):
+    body = client.get("/api/compare", params={**ALL, "symbols": "abcltd,XYZIND", "days": 3650}).json()
+    a, x = body["stocks"]
+    assert a["symbol"] == "ABCLTD" and a["path"][0]["value"] == 0
+    assert a["stats"]["buys"] == 2 and x["stats"]["sells"] == 1
+    assert {t["direction"] for t in a["trades"]} == {"buy"}
+    assert client.get("/api/compare", params={"symbols": "A,B,C,D,E"}).status_code == 422
+    assert client.get("/api/compare", params={"symbols": "<x>"}).status_code == 422
+
+
+def test_screener_and_saved_screens(client):
+    presets = client.get("/api/screener/presets").json()
+    assert "Fresh clusters" in presets
+    run = client.post("/api/screener/run", json={"lookback_days": 1095, "min_promoters": 2}).json()
+    assert [r["symbol"] for r in run["rows"]] == ["ABCLTD"] and run["rows"][0]["watching"] is False
+    assert client.post("/api/screener/run", json={"lookback_days": 1}).status_code == 422
+    saved = client.post("/api/screens", json={"name": "Pairs", "alert": True,
+                                              "criteria": {"lookback_days": 1095, "min_promoters": 2}}).json()
+    assert saved["matches"] == 1
+    [s] = client.get("/api/screens").json()
+    assert s["name"] == "Pairs" and s["last_matches"] == ["ABCLTD"]
+    assert client.delete(f"/api/screens/{s['id']}").json() == {"deleted": s["id"]}
+    assert client.delete(f"/api/screens/{s['id']}").status_code == 404

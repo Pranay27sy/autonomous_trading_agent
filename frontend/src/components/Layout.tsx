@@ -5,6 +5,7 @@ import { api } from "../api";
 import { MIN_VALUES, PERIODS, useFilters } from "../filters";
 import { ago, day, inr } from "../format";
 import { Segmented, Switch } from "./ui";
+import { CommandPalette } from "./CommandPalette";
 import { AlertBell } from "./watch";
 
 export function Layout() {
@@ -24,14 +25,29 @@ export function Layout() {
           </NavLink>
           <NavLink to={{ pathname: "/trades", search }}>Trades</NavLink>
           <NavLink to={{ pathname: "/stock", search }}>Stock</NavLink>
+          <NavLink to={{ pathname: "/screener", search }}>Screener</NavLink>
+          <NavLink to={{ pathname: "/market", search }}>Market</NavLink>
+          <NavLink to={{ pathname: "/people", search }}>Promoters</NavLink>
+          <NavLink to={{ pathname: "/pledges", search }}>Pledges</NavLink>
+          <NavLink to={{ pathname: "/research", search }}>Research</NavLink>
+          <NavLink to={{ pathname: "/compare", search }}>Compare</NavLink>
           <NavLink to={{ pathname: "/watchlist", search }}>Watchlist</NavLink>
         </nav>
         <div className="topbar-right">
+          <button
+            className="btn"
+            type="button"
+            title="Go to a page, stock or promoter (Ctrl+K)"
+            onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }))}
+          >
+            ⌕ <span className="refresh-label faint">Ctrl K</span>
+          </button>
           <Bell />
           <RefreshControl />
         </div>
       </header>
       <FilterBar />
+      <CommandPalette />
       <main>
         <Outlet />
       </main>
@@ -97,6 +113,12 @@ function FilterBar() {
           onChange={(basis) => update({ basis })}
         />
       </div>
+      <Switch
+        label="Hide group transfers"
+        checked={!f.includeTransfers}
+        onChange={(hide) => update({ includeTransfers: !hide })}
+        title="Hide promoter-group members buying from and selling to each other on the same day: not a view on the price"
+      />
       <Switch
         label="Open-market only"
         checked={f.marketOnly}

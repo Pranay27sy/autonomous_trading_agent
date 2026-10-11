@@ -106,4 +106,12 @@ export function AlertBell({ unread }: { unread: number }) {
   );
 }
 
-export const KIND_LABEL = { watchlist: "watch", big_buy: "big buy", big_sell: "big sell", cluster: "cluster" } as const;
+export const KIND_LABEL = {
+  watchlist: "watch",
+  conviction: "conviction",
+  big_buy: "big buy",
+  big_sell: "big sell",
+  cluster: "cluster",
+  pledge: "pledge",
+  screen: "screen",
+} as const;

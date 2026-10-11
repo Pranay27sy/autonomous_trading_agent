@@ -18,7 +18,8 @@ from dataclasses import asdict, dataclass, fields
 
 import pandas as pd
 
-from . import analysis
+from . import analysis, companies, conviction, pledges, screener
+from .prices import nse_ticker
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -35,6 +36,9 @@ class AlertSettings:
     cluster_min_people: int | None = 3     # distinct promoters; None turns it off
     cluster_window_days: int = 30
     market_only: bool = True               # ignore gifts, pledges, ESOPs, ...
+    min_conviction: int | None = None      # high-conviction buy in any stock; None = off
+    pledge_invocations: bool = True        # lender invoked pledged promoter shares (any stock);
+                                           # watched stocks also alert on new pledges
 
     @classmethod
     def load(cls, store: Store) -> AlertSettings:
@@ -64,14 +68,18 @@ def _trade_alert(kind: str, group: pd.DataFrame) -> dict:
     side = "buy" if e["direction"] == "buy" else "sell"
     n = len(group)
     total = group["value"].fillna(0).sum()
-    noun = {"watchlist": f"promoter {side.upper()}",
+    noun = {"watchlist": f"promoter {side.upper()}", "conviction": "high-conviction buy",
             "big_buy": "large promoter buy", "big_sell": "large promoter sell"}[kind]
     if n == 1:
         hold = ""
         if pd.notna(e.get("holding_before_pct")) and pd.notna(e.get("holding_after_pct")):
             hold = f" · holding {e['holding_before_pct']:.2f}% → {e['holding_after_pct']:.2f}%"
         title = f"{e['symbol']}: {noun} {inr(e.get('value'))}"
-        detail = (f"{e.get('person') or 'Promoter'} · {e.get('mode') or ''}{hold} · "
+        if kind == "conviction":
+            title += f" (score {int(e['conviction'])})"
+        why = e.get("conviction_reasons")
+        why = f" · {'; '.join(why[:3])}" if kind == "conviction" and isinstance(why, list) and why else ""
+        detail = (f"{e.get('person') or 'Promoter'} · {e.get('mode') or ''}{hold}{why} · "
                   f"disclosed {_day(e.get('disclosure_date'))}")
         key = e["trade_key"]
     else:
@@ -107,6 +115,9 @@ def evaluate(new_events: pd.DataFrame, all_events: pd.DataFrame, watchlist: set[
         value = e.get("value") or 0
         if s.watchlist_trades and e["symbol"] in watchlist:
             return "watchlist"
+        if (e["direction"] == "buy" and s.min_conviction is not None
+                and pd.notna(e.get("conviction")) and e["conviction"] >= s.min_conviction):
+            return "conviction"
         if e["direction"] == "buy" and s.big_buy_value is not None and value >= s.big_buy_value:
             return "big_buy"
         if e["direction"] == "sell" and s.big_sell_value is not None and value >= s.big_sell_value:
@@ -147,6 +158,70 @@ def evaluate(new_events: pd.DataFrame, all_events: pd.DataFrame, watchlist: set[
     return [a for a in out if not (a["kind"] == "big_buy" and a["symbol"] in clustered)]
 
 
+def pledge_alerts(new_trades: pd.DataFrame, watchlist: set[str], s: AlertSettings,
+                  closes) -> list[dict]:
+    """Invocations in any stock (if enabled); any pledge event in a watched stock."""
+    pe = pledges.pledge_events(new_trades, closes)
+    pe = pe[(s.pledge_invocations & (pe["kind"] == "invoked")) | pe["symbol"].isin(watchlist)] \
+        if not pe.empty else pe
+    out = []
+    for (sym, kind), g in pe.groupby(["symbol", "kind"], sort=False):
+        verb = {"invoked": "lender invoked pledged promoter shares",
+                "created": "promoter pledged shares", "released": "promoter pledge released"}[kind]
+        people = ", ".join(dict.fromkeys(g["person"].fillna("Promoter")))
+        out.append({
+            "kind": "pledge",
+            "dedup_key": hashlib.sha1("|".join(sorted(g["trade_key"])).encode(),
+                                      usedforsecurity=False).hexdigest(),
+            "symbol": sym, "company": g["company"].iloc[0],
+            "direction": "sell" if kind != "released" else "buy",
+            "value": float(g["value"].fillna(0).sum()) or None,
+            "event_date": pd.Timestamp(g["event_date"].max()).date().isoformat(),
+            "title": f"{sym}: {verb} ({g['quantity'].fillna(0).sum():,.0f} shares, "
+                     f"~{inr(g['value'].fillna(0).sum())})",
+            "detail": f"{people} · disclosed {_day(g['event_date'].max())}",
+        })
+    return out
+
+
+def screen_alerts(store: Store, events: pd.DataFrame) -> list[dict]:
+    """Stocks that newly match a saved screen with alerts on.
+
+    Each screen remembers its matches; a stock alerts when it enters, and again
+    only if it leaves and later re-enters with a newer trade.
+    """
+    screens = [sc for sc in store.screens() if sc["alert"]]
+    if not screens or events.empty:
+        return []
+
+    def closes(sym: str) -> pd.Series:
+        return store.load_prices(nse_ticker(sym))
+
+    ev = companies.with_company_info(events, store.company_info())
+    if "conviction" not in ev:
+        ev = conviction.add_conviction(ev, lambda sym: store.load_bars(nse_ticker(sym)))
+    pe = pledges.pledge_events(store.load_trades(), closes)
+    risk = {p["symbol"]: p["risk"] for p in pledges.summarize(pe)} if not pe.empty else {}
+    out = []
+    for sc in screens:
+        c = screener.Criteria.from_dict(sc["criteria"])
+        rows = screener.screen(screener.metrics(ev, closes, c.lookback_days, risk), c)
+        before = set(sc["last_matches"] or [])
+        for _, r in rows[~rows["symbol"].isin(before)].iterrows():
+            last = pd.Timestamp(r["last_trade"]).date().isoformat()
+            out.append({
+                "kind": "screen",
+                "dedup_key": f"{sc['id']}:{r['symbol']}:{last}",
+                "symbol": r["symbol"], "company": r["company"], "direction": "buy",
+                "value": float(r["net_value"]), "event_date": last,
+                "title": f"{r['symbol']}: entered your screen “{sc['name']}”",
+                "detail": f"net promoter flow {inr(r['net_value'])} · {int(r['buys'])} buys by "
+                          f"{int(r['promoters'])} promoters in {c.lookback_days} days",
+            })
+        store.set_screen_matches(sc["id"], sorted(rows["symbol"]))
+    return out
+
+
 def scan(store: Store) -> list[dict]:
     """Raise alerts for trades stored since the last scan. Returns the new alerts."""
     mark = store.get_meta(SCAN_MARK)
@@ -159,12 +234,19 @@ def scan(store: Store) -> list[dict]:
     if new.empty:
         return []
     s = AlertSettings.load(store)
-    new_events = analysis.promoter_events(new, market_only=s.market_only)
-    all_events = analysis.promoter_events(store.load_trades(), market_only=s.market_only) \
-        if s.cluster_min_people and not new_events.empty else new_events
+    # Events across all trades, so a new buy can pair with its transfer partner
+    # (or join a cluster) even when the other side arrived earlier.
+    all_events = analysis.promoter_events(store.load_trades(), market_only=s.market_only)
+    all_events = all_events[~all_events["internal_transfer"]]
+    if s.min_conviction is not None and not all_events.empty:
+        all_events = conviction.add_conviction(all_events,
+                                               lambda sym: store.load_bars(nse_ticker(sym)))
+    new_events = all_events[all_events["trade_key"].isin(set(new["trade_key"]))]
     watch = {w["symbol"] for w in store.watchlist()}
-    added = store.add_alerts(evaluate(new_events, all_events, watch, s)) \
-        if not new_events.empty else []
+    raised = evaluate(new_events, all_events, watch, s) if not new_events.empty else []
+    raised += pledge_alerts(new, watch, s, lambda sym: store.load_prices(nse_ticker(sym)))
+    raised += screen_alerts(store, all_events)
+    added = store.add_alerts(raised)
     store.set_meta(SCAN_MARK, latest or mark)
     if added:
         log.info("Raised %d alerts", len(added))

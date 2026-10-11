@@ -174,3 +174,53 @@ def test_trades_in_one_stock_are_grouped_and_clusters_cover_big_buys(store):
     assert new["XYZIND"]["detail"].startswith("S1, S2 ·")
     assert new["NEWCO"]["kind"] == "cluster"  # not three separate big-buy alerts
     assert len(new) == 2
+
+
+def test_internal_transfers_do_not_alert(store):
+    alerts.scan(store)
+    store.upsert_trades([trade("HoldCo", 9e8, symbol="BIGCO"),
+                         {**trade("Family Trust", 9e8, "Sell", symbol="BIGCO")}])
+    assert alerts.scan(store) == []
+
+
+def test_high_conviction_rule(store):
+    alerts.scan(store)
+    AlertSettings(big_buy_value=None, cluster_min_people=None, min_conviction=30).save(store)
+    store.upsert_trades([{**trade("Founder", 4e8, symbol="NEWCO"), "holding_before_pct": 10.0,
+                          "holding_after_pct": 11.5}])
+    [a] = alerts.scan(store)
+    assert a["kind"] == "conviction" and "(score " in a["title"]
+    assert "raised their stake by 1.50% of the company" in a["detail"]
+
+
+def test_pledge_invocation_alerts_anywhere_and_watched_pledges(store):
+    alerts.scan(store)
+    store.watch("XYZIND")
+    base = {"category": "Promoter Group", "security_type": "Equity Shares", "value": 47.0,
+            "holding_before_pct": 5.0, "holding_after_pct": 5.0, "trade_from": "2024-03-05",
+            "trade_to": "2024-03-05", "intimation_date": "2024-03-05",
+            "disclosure_date": "2024-03-05", "disclosure_estimated": 0}
+    store.upsert_trades([
+        {**base, "symbol": "NEWCO", "company": "NewCo", "person": "Lender Victim",
+         "quantity": 5e5, "txn_type": "Pledge Invoke", "mode": "Invocation of pledge"},
+        {**base, "symbol": "XYZIND", "company": "XYZ", "person": "Owner",
+         "quantity": 1e5, "txn_type": "Pledge", "mode": "Pledge Creation"},
+        {**base, "symbol": "OTHER", "company": "Other", "person": "Someone",
+         "quantity": 1e5, "txn_type": "Pledge", "mode": "Pledge Creation"},  # not watched: no alert
+    ])
+    titles = sorted(a["title"] for a in alerts.scan(store))
+    assert len(titles) == 2
+    assert titles[0].startswith("NEWCO: lender invoked pledged promoter shares (500,000 shares")
+    assert titles[1].startswith("XYZIND: promoter pledged shares")
+
+
+def test_saved_screen_alerts_when_a_stock_enters(store):
+    alerts.scan(store)
+    AlertSettings(big_buy_value=None, cluster_min_people=None).save(store)
+    sid = store.save_screen("Big buyers", {"lookback_days": 365, "min_net_value": 5e7}, True, [])
+    store.upsert_trades([trade("Founder", 9e7, symbol="NEWCO")])
+    [a] = alerts.scan(store)
+    assert a["kind"] == "screen" and a["title"] == "NEWCO: entered your screen “Big buyers”"
+    assert store.screens()[0]["last_matches"] == ["NEWCO"] and store.screens()[0]["id"] == sid
+    store.upsert_trades([trade("Founder", 1e7, symbol="NEWCO", day="2024-03-06")])
+    assert alerts.scan(store) == []  # still in the screen: no repeat

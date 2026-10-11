@@ -24,7 +24,7 @@ export function Trades() {
     () =>
       tradeColumns([
         "event_date", "symbol", "direction", "company", "person", "mode", "value", "quantity",
-        "holding_after_pct", "holding_change_pct", ...(allHorizons ? ALL_RETURNS : KEY_RETURNS),
+        "conviction", "holding_after_pct", "holding_change_pct", ...(allHorizons ? ALL_RETURNS : KEY_RETURNS),
       ]),
     [allHorizons],
   );

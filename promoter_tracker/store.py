@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS watchlist (
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
-    kind TEXT NOT NULL,          -- watchlist | big_buy | big_sell | cluster
+    kind TEXT NOT NULL,          -- watchlist | conviction | big_buy | big_sell | cluster | pledge | screen
     dedup_key TEXT NOT NULL,     -- trade_key, or symbol:start for clusters
     symbol TEXT NOT NULL,
     company TEXT,
@@ -78,6 +78,23 @@ CREATE TABLE IF NOT EXISTS alerts (
     UNIQUE (kind, dedup_key)
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at);
+CREATE TABLE IF NOT EXISTS screens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    criteria TEXT NOT NULL,       -- JSON (screener.Criteria)
+    alert INTEGER NOT NULL DEFAULT 0,
+    last_matches TEXT,            -- JSON list of symbols, for "newly matched" alerts
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS company_info (
+    symbol TEXT PRIMARY KEY,
+    name TEXT,
+    sector TEXT,
+    industry TEXT,
+    market_cap REAL,           -- INR, as of updated_at
+    shares_outstanding REAL,
+    updated_at TEXT NOT NULL   -- also set when the lookup failed, so it isn't retried daily
+);
 """
 
 
@@ -316,6 +333,58 @@ class Store:
         with self._lock, self.conn:
             self.conn.executemany("UPDATE alerts SET notified_at = ? WHERE id = ?",
                                   [(_now(), i) for i in ids])
+
+    # --- saved screens ------------------------------------------------------
+    def screens(self) -> list[dict]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id, name, criteria, alert, last_matches, created_at FROM screens "
+                "ORDER BY name").fetchall()
+        return [{"id": i, "name": n, "criteria": json.loads(c), "alert": bool(a),
+                 "last_matches": json.loads(m) if m else None, "created_at": t}
+                for i, n, c, a, m, t in rows]
+
+    def save_screen(self, name: str, criteria: dict, alert: bool,
+                    matches: list[str] | None) -> int:
+        """Create or replace the screen called `name`. Returns its id."""
+        with self._lock, self.conn:
+            self.conn.execute(
+                "INSERT INTO screens (name, criteria, alert, last_matches, created_at) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET "
+                "criteria = excluded.criteria, alert = excluded.alert, "
+                "last_matches = excluded.last_matches",
+                (name, json.dumps(criteria), int(alert), json.dumps(matches), _now()))
+            return self.conn.execute("SELECT id FROM screens WHERE name = ?", (name,)).fetchone()[0]
+
+    def delete_screen(self, screen_id: int) -> bool:
+        with self._lock, self.conn:
+            return self.conn.execute("DELETE FROM screens WHERE id = ?", (screen_id,)).rowcount == 1
+
+    def set_screen_matches(self, screen_id: int, matches: list[str]) -> None:
+        with self._lock, self.conn:
+            self.conn.execute("UPDATE screens SET last_matches = ? WHERE id = ?",
+                              (json.dumps(matches), screen_id))
+
+    # --- company info -------------------------------------------------------
+    COMPANY_FIELDS = ("name", "sector", "industry", "market_cap", "shares_outstanding")
+
+    def upsert_company_info(self, symbol: str, info: dict) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO company_info (symbol, name, sector, industry, market_cap, "
+                "shares_outstanding, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (symbol, *(info.get(f) for f in self.COMPANY_FIELDS), _now()))
+
+    def company_info(self) -> pd.DataFrame:
+        """Sector, industry and market cap per symbol (index: symbol)."""
+        with self._lock:
+            df = pd.read_sql_query("SELECT * FROM company_info", self.conn)
+        return df.set_index("symbol")
+
+    def company_info_age(self) -> dict[str, str]:
+        """symbol -> updated_at, for deciding what to look up again."""
+        with self._lock:
+            return dict(self.conn.execute("SELECT symbol, updated_at FROM company_info"))
 
     # --- meta -------------------------------------------------------------
     def set_meta(self, key: str, value: str) -> None:

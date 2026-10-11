@@ -11,20 +11,22 @@ import logging
 import re
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Literal
 
+import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Path as PathParam
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import alerts as alert_rules
-from . import notify, service
+from . import notify, pledges, research, screener, service
 from .config import Settings, configure_logging, load_settings
 from .prices import BENCHMARK, nse_ticker
 from .refresh import RefreshInProgress, refresh_all
@@ -34,6 +36,7 @@ log = logging.getLogger(__name__)
 
 _FROM_SETTINGS = Path("<settings>")
 SYMBOL_RE = re.compile(r"^[A-Z0-9&.\-]{1,20}$")
+COMPARE_RE = r"^[A-Za-z0-9&.\-]{1,20}(,[A-Za-z0-9&.\-]{1,20}){0,3}$"  # 1-4 symbols
 TEST_ALERT_COOLDOWN = 30  # seconds between test messages
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -45,6 +48,28 @@ class AlertSettingsBody(BaseModel):
     cluster_min_people: int | None = Field(default=3, ge=2, le=10)
     cluster_window_days: int = Field(default=30, ge=1, le=365)
     market_only: bool = True
+    min_conviction: int | None = Field(default=None, ge=0, le=100)
+    pledge_invocations: bool = True
+
+
+class CriteriaBody(BaseModel):
+    lookback_days: int = Field(default=90, ge=7, le=1095)
+    min_net_value: float | None = Field(default=None, ge=-1e13, le=1e13)
+    min_buys: int | None = Field(default=None, ge=0, le=1000)
+    min_promoters: int | None = Field(default=None, ge=0, le=100)
+    min_conviction: int | None = Field(default=None, ge=0, le=100)
+    min_below_high: float | None = Field(default=None, ge=0, le=1)
+    max_change_3m: float | None = Field(default=None, ge=-1, le=10)
+    sectors: list[str] = Field(default_factory=list, max_length=50)
+    caps: list[str] = Field(default_factory=list, max_length=10)
+    exclude_pledge_risk: bool = False
+    sort: Literal["net_value", "conviction", "below_high", "promoters", "change_3m"] = "net_value"
+
+
+class ScreenBody(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    criteria: CriteriaBody
+    alert: bool = False
 
 
 class MarkRead(BaseModel):
@@ -131,10 +156,11 @@ def filters(
     min_value: Annotated[float, Query(ge=0, le=1e12)] = 1e6,
     market_only: bool = True,
     basis: Literal["disclosure_date", "trade_to"] = "disclosure_date",
+    include_transfers: bool = False,
 ) -> service.Filters:
     """The filter bar's query parameters, shared by the data endpoints."""
     return service.Filters(period, tuple(s for s in sides.split(",") if s), min_value,
-                           market_only, basis)
+                           market_only, basis, exclude_transfers=not include_transfers)
 
 
 # Module level so FastAPI can resolve it (annotations are strings here).
@@ -235,6 +261,182 @@ def create_app(settings: Settings | None = None,
         _, view = events_for(request, f)
         return service.trades(view, q)
 
+    # --- research -----------------------------------------------------------------
+    research_cache: OrderedDict = OrderedDict()
+    research_lock = threading.Lock()
+
+    def cached(request: Request, key: tuple, compute):
+        """Research results are deterministic until the next refresh; keep the last 16."""
+        key = (request.app.state.events.version(), *key)
+        with research_lock:
+            if key in research_cache:
+                research_cache.move_to_end(key)
+                return research_cache[key]
+        value = compute()
+        with research_lock:
+            research_cache[key] = value
+            while len(research_cache) > 16:
+                research_cache.popitem(last=False)
+        return value
+
+    def closes_and_bench(request: Request):
+        store: Store = request.app.state.store
+        return (lambda s: store.load_prices(nse_ticker(s))), store.load_prices(BENCHMARK)
+
+    @app.get("/api/research/backtest")
+    def backtest(
+        request: Request,
+        side: Literal["buy", "sell"] = "buy",
+        hold_days: Annotated[int, Query(ge=1, le=250)] = 60,
+        min_value: Annotated[float, Query(ge=0, le=1e12)] = 1e6,
+        min_conviction: Annotated[int | None, Query(ge=0, le=100)] = None,
+        min_stake_pct: Annotated[float | None, Query(ge=0, le=100)] = None,
+        sectors: Annotated[str, Query(max_length=500)] = "",
+        caps: Annotated[str, Query(max_length=200)] = "",
+        start: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+        end: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+        one_per_stock_days: Annotated[int, Query(ge=0, le=365)] = 0,
+        market_only: bool = True,
+        basis: Literal["disclosure_date", "trade_to"] = "disclosure_date",
+    ) -> dict:
+        rule = research.Rule(side, hold_days, min_value, min_conviction, min_stake_pct,
+                             tuple(s for s in sectors.split(",") if s),
+                             tuple(c for c in caps.split(",") if c), start, end, one_per_stock_days)
+
+        def run():
+            events = request.app.state.events.get(market_only, basis)
+            closes, bench = closes_and_bench(request)
+            out = research.backtest(events, closes, bench, rule)
+            out["trades"] = out["trades"][:1000]  # newest first
+            return service.clean_tree(out)
+
+        return cached(request, ("backtest", rule, market_only, basis), run)
+
+    @app.get("/api/research/event-study")
+    def event_study(request: Request, groups: Literal["side", "conviction"] = "side",
+                    market_only: bool = True,
+                    basis: Literal["disclosure_date", "trade_to"] = "disclosure_date") -> dict:
+        def run():
+            events = request.app.state.events.get(market_only, basis)
+            closes, bench = closes_and_bench(request)
+            return research.event_study(events, closes, bench, groups=groups)
+
+        return cached(request, ("event_study", groups, market_only, basis), run)
+
+    def pledge_events(request: Request):
+        store: Store = request.app.state.store
+        return cached(request, ("pledge_events",), lambda: pledges.pledge_events(
+            store.load_trades(), lambda s: store.load_prices(nse_ticker(s))))
+
+    @app.get("/api/pledges")
+    def pledge_summary(request: Request,
+                       period: Literal["1M", "3M", "6M", "1Y", "3Y", "All"] = "1Y") -> dict:
+        events = pledge_events(request)
+        if not events.empty and service.PERIODS[period] is not None:
+            start = events["event_date"].max() - pd.Timedelta(days=service.PERIODS[period])
+            events = events[events["event_date"] >= start]
+        info = request.app.state.store.company_info()
+        shares = info["shares_outstanding"] if not info.empty else None
+        totals = {k: {"events": int((events["kind"] == k).sum()),
+                      "value": float(events.loc[events["kind"] == k, "value"].fillna(0).sum()),
+                      "companies": int(events.loc[events["kind"] == k, "symbol"].nunique())}
+                  for k in pledges.KINDS}
+        return service.clean_tree({
+            "totals": totals,
+            "companies": pledges.summarize(events, shares),
+            "events": events.head(300).to_dict("records"),
+        })
+
+    # --- screener -------------------------------------------------------------------
+    def screen_rows(request: Request, lookback_days: int, market_only: bool, basis: str):
+        """Per-stock screener metrics; cached until the next refresh."""
+        store: Store = request.app.state.store
+
+        def build():
+            events = request.app.state.events.get(market_only, basis)
+            pe = pledge_events(request)
+            risk = {p["symbol"]: p["risk"] for p in pledges.summarize(pe)} if not pe.empty else {}
+            return screener.metrics(events, lambda s: store.load_prices(nse_ticker(s)),
+                                    lookback_days, risk)
+
+        return cached(request, ("screen_rows", lookback_days, market_only, basis), build)
+
+    def run_screen(request: Request, c: screener.Criteria, market_only=True,
+                   basis="disclosure_date"):
+        return screener.screen(screen_rows(request, c.lookback_days, market_only, basis), c)
+
+    @app.get("/api/screener/presets")
+    def presets() -> dict:
+        return {name: c.to_dict() for name, c in screener.PRESETS.items()}
+
+    @app.post("/api/screener/run")
+    def screener_run(request: Request, body: CriteriaBody, market_only: bool = True,
+                     basis: Literal["disclosure_date", "trade_to"] = "disclosure_date") -> dict:
+        rows = run_screen(request, screener.Criteria.from_dict(body.model_dump()), market_only, basis)
+        watched = {w["symbol"] for w in request.app.state.store.watchlist()}
+        out = service.clean_tree(rows.to_dict("records"))
+        for r in out:
+            r["watching"] = r["symbol"] in watched
+        return {"rows": out, "count": len(out)}
+
+    @app.get("/api/screens")
+    def list_screens(request: Request) -> list[dict]:
+        return request.app.state.store.screens()
+
+    @app.post("/api/screens")
+    def save_screen(request: Request, body: ScreenBody) -> dict:
+        c = screener.Criteria.from_dict(body.criteria.model_dump())
+        # Remember today's matches so an alerting screen only flags stocks that enter later.
+        matches = sorted(run_screen(request, c)["symbol"]) if body.alert else None
+        sid = request.app.state.store.save_screen(body.name.strip(), c.to_dict(), body.alert,
+                                                  matches)
+        return {"id": sid, "name": body.name.strip(), "matches": len(matches or [])}
+
+    @app.delete("/api/screens/{screen_id}")
+    def delete_screen(request: Request, screen_id: int) -> dict:
+        if not request.app.state.store.delete_screen(screen_id):
+            raise HTTPException(404, "No such screen")
+        return {"deleted": screen_id}
+
+    @app.get("/api/people")
+    def people(request: Request, f: F,
+               min_scored: Annotated[int, Query(ge=1, le=50)] = 3) -> list[dict]:
+        _, view = events_for(request, f)
+        return service.people(view, min_scored)
+
+    @app.get("/api/people/{slug}")
+    def person(request: Request, slug: Annotated[str, PathParam(pattern=r"^[0-9a-z-]{1,200}$")],
+               f: F) -> dict:
+        events, _ = events_for(request, f)
+        if f.exclude_transfers and not events.empty:
+            events = events[~events["internal_transfer"]]
+        out = service.person(events, slug) if not events.empty else None
+        if out is None:
+            raise HTTPException(404, "No promoter trades for this person")
+        return out
+
+    @app.get("/api/compare")
+    def compare(request: Request, f: F,
+                symbols: Annotated[str, Query(pattern=COMPARE_RE)],
+                days: Annotated[int | None, Query(ge=30, le=3650)] = 365) -> dict:
+        syms = list(dict.fromkeys(s.upper() for s in symbols.split(",")))
+        events, _ = events_for(request, f)
+        if f.exclude_transfers and not events.empty:
+            events = events[~events["internal_transfer"]]
+        store: Store = request.app.state.store
+        return service.compare(events, syms, lambda s: store.load_prices(nse_ticker(s)), days)
+
+    @app.get("/api/market")
+    def market(request: Request, f: F) -> dict:
+        _, view = events_for(request, f)
+        return cached(request, ("market", f), lambda: service.market(
+            view, request.app.state.store.load_prices(BENCHMARK)))
+
+    @app.get("/api/sectors")
+    def sectors(request: Request, f: F) -> dict:
+        _, view = events_for(request, f)
+        return service.sectors(view)
+
     @app.get("/api/stocks")
     def stocks(request: Request, f: F) -> list[dict]:
         events, view = events_for(request, f)
@@ -249,7 +451,11 @@ def create_app(settings: Settings | None = None,
         if events.empty or symbol not in set(events["symbol"]):
             raise HTTPException(404, f"No promoter trades for {symbol}")
         bars = request.app.state.store.load_bars(nse_ticker(symbol))
-        return service.stock(events, symbol, f.sides or ("buy", "sell"), bars)
+        out = service.stock(events, symbol, f.sides or ("buy", "sell"), bars, f.exclude_transfers)
+        pe = pledge_events(request)
+        out["pledges"] = service.clean_tree(
+            pe[pe["symbol"] == symbol].to_dict("records") if not pe.empty else [])
+        return out
 
     def known_symbol(request: Request, symbol: str) -> str:
         symbol = symbol.upper()
@@ -265,6 +471,8 @@ def create_app(settings: Settings | None = None,
     def watchlist(request: Request, f: F) -> list[dict]:
         store: Store = request.app.state.store
         events, _ = events_for(request, f)
+        if f.exclude_transfers and not events.empty:
+            events = events[~events["internal_transfer"]]
         return service.watchlist(events, store.watchlist(), f.sides or ("buy", "sell"),
                                  lambda s: store.load_prices(nse_ticker(s)))
 

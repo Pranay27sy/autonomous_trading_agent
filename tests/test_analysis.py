@@ -102,3 +102,30 @@ def test_no_returns_from_estimated_disclosure_dates(trades):
     by_trade = analysis.promoter_events(trades, event_date="trade_to")
     out = analysis.event_returns(by_trade, lambda s: _prices(), _prices(), horizons=(5,))
     assert out[out["person"] == "Ravi Kumar"]["ret_5"].notna().all()
+
+
+def _ev(person, direction, qty, day="2024-03-05", symbol="ABC", value=None):
+    return {"symbol": symbol, "company": symbol, "person": person, "category": "Promoter Group",
+            "txn_type": direction, "mode": "Market Purchase" if direction == "Buy" else "Market Sale",
+            "quantity": qty, "value": value if value is not None else qty * 100.0,
+            "holding_before_pct": 1.0, "holding_after_pct": 1.0,
+            "trade_to": pd.Timestamp(day), "disclosure_date": pd.Timestamp(day),
+            "disclosure_estimated": False}
+
+
+def test_internal_transfers_pair_same_size_buys_and_sells_between_members():
+    trades = pd.DataFrame([
+        _ev("HoldCo", "Buy", 1000), _ev("Family Trust", "Sell", 1010),   # transfer (1% apart)
+        _ev("Founder", "Buy", 500),                                       # genuine buy, same day
+        _ev("X", "Buy", 300, day="2024-03-06"), _ev("Y", "Sell", 300, day="2024-03-07"),  # different days
+        _ev("Z", "Buy", 200, symbol="DEF"), _ev("Z", "Sell", 200, symbol="DEF"),  # same person
+    ])
+    ev = analysis.promoter_events(trades)
+    flagged = set(ev.loc[ev["internal_transfer"], "person"])
+    assert flagged == {"HoldCo", "Family Trust"}
+
+
+def test_each_sell_pairs_with_one_buy_only():
+    trades = pd.DataFrame([_ev("A", "Buy", 1000), _ev("B", "Buy", 1000), _ev("C", "Sell", 1000)])
+    ev = analysis.promoter_events(trades)
+    assert ev["internal_transfer"].sum() == 2  # C with one of A/B; the other buy is real

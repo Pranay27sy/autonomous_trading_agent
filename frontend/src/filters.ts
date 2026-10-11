@@ -15,6 +15,8 @@ export interface Filters {
   minValue: number;
   marketOnly: boolean;
   basis: Basis;
+  /** Show promoter-group members trading with each other (hidden by default). */
+  includeTransfers: boolean;
 }
 
 export const DEFAULT_FILTERS: Filters = {
@@ -23,6 +25,7 @@ export const DEFAULT_FILTERS: Filters = {
   minValue: 1e6,
   marketOnly: true,
   basis: "disclosure_date",
+  includeTransfers: false,
 };
 
 export function parseFilters(params: URLSearchParams): Filters {
@@ -38,6 +41,7 @@ export function parseFilters(params: URLSearchParams): Filters {
     minValue: params.has("min") && Number.isFinite(min) && min >= 0 ? min : DEFAULT_FILTERS.minValue,
     marketOnly: params.get("market") !== "all",
     basis: params.get("basis") === "trade" ? "trade_to" : "disclosure_date",
+    includeTransfers: params.get("transfers") === "show",
   };
 }
 
@@ -50,6 +54,7 @@ export function filtersToParams(f: Filters, forApi = false): URLSearchParams {
     p.set("min_value", String(f.minValue));
     p.set("market_only", String(f.marketOnly));
     p.set("basis", f.basis);
+    p.set("include_transfers", String(f.includeTransfers));
     return p;
   }
   const d = DEFAULT_FILTERS;
@@ -58,6 +63,7 @@ export function filtersToParams(f: Filters, forApi = false): URLSearchParams {
   if (f.minValue !== d.minValue) p.set("min", String(f.minValue));
   if (!f.marketOnly) p.set("market", "all");
   if (f.basis !== d.basis) p.set("basis", "trade");
+  if (f.includeTransfers) p.set("transfers", "show");
   return p;
 }
 
