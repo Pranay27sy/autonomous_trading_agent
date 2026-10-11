@@ -35,6 +35,7 @@ const stockPage = () => import("./pages/Stock").then((m) => ({ Component: m.Stoc
 const researchPage = () => import("./pages/Research").then((m) => ({ Component: m.Research }));
 const marketPage = () => import("./pages/Market").then((m) => ({ Component: m.Market }));
 const comparePage = () => import("./pages/Compare").then((m) => ({ Component: m.Compare }));
+const patternsPage = () => import("./pages/Patterns").then((m) => ({ Component: m.Patterns }));
 
 const router = createBrowserRouter([
   {
@@ -46,6 +47,7 @@ const router = createBrowserRouter([
       { path: "research", lazy: researchPage },
       { path: "market", lazy: marketPage },
       { path: "compare", lazy: comparePage },
+      { path: "patterns", lazy: patternsPage },
       { path: "people", element: <People /> },
       { path: "pledges", element: <Pledges /> },
       { path: "screener", element: <Screener /> },

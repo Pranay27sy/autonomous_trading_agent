@@ -18,8 +18,8 @@ from dataclasses import asdict, dataclass, fields
 
 import pandas as pd
 
-from . import analysis, companies, conviction, pledges, screener
-from .prices import nse_ticker
+from . import analysis, companies, conviction, patterns, pledges, screener
+from .prices import BENCHMARK, nse_ticker
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -37,6 +37,8 @@ class AlertSettings:
     cluster_window_days: int = 30
     market_only: bool = True               # ignore gifts, pledges, ESOPs, ...
     min_conviction: int | None = None      # high-conviction buy in any stock; None = off
+    pattern_watchlist: bool = True         # chart-pattern breakouts in watched stocks
+    pattern_promoter: bool = False         # bullish breakouts with promoter buying, any stock
     pledge_invocations: bool = True        # lender invoked pledged promoter shares (any stock);
                                            # watched stocks also alert on new pledges
 
@@ -223,7 +225,17 @@ def screen_alerts(store: Store, events: pd.DataFrame) -> list[dict]:
 
 
 def scan(store: Store) -> list[dict]:
-    """Raise alerts for trades stored since the last scan. Returns the new alerts."""
+    """Raise alerts for new trades and new chart-pattern breakouts. Returns the new alerts."""
+    s = AlertSettings.load(store)
+    raised = _trade_alerts(store, s) + pattern_alerts(store, s)
+    added = store.add_alerts(raised)
+    if added:
+        log.info("Raised %d alerts", len(added))
+    return added
+
+
+def _trade_alerts(store: Store, s: AlertSettings) -> list[dict]:
+    """Alerts from trades stored since the last scan."""
     mark = store.get_meta(SCAN_MARK)
     latest = store.max_first_seen()
     if mark is None:
@@ -233,7 +245,6 @@ def scan(store: Store) -> list[dict]:
     new = store.load_trades(seen_after=mark)
     if new.empty:
         return []
-    s = AlertSettings.load(store)
     # Events across all trades, so a new buy can pair with its transfer partner
     # (or join a cluster) even when the other side arrived earlier.
     all_events = analysis.promoter_events(store.load_trades(), market_only=s.market_only)
@@ -246,8 +257,59 @@ def scan(store: Store) -> list[dict]:
     raised = evaluate(new_events, all_events, watch, s) if not new_events.empty else []
     raised += pledge_alerts(new, watch, s, lambda sym: store.load_prices(nse_ticker(sym)))
     raised += screen_alerts(store, all_events)
-    added = store.add_alerts(raised)
     store.set_meta(SCAN_MARK, latest or mark)
-    if added:
-        log.info("Raised %d alerts", len(added))
-    return added
+    return raised
+
+
+PATTERN_MARK = "patterns_scanned_through"  # meta key: latest price date already scanned
+
+
+def pattern_alerts(store: Store, s: AlertSettings) -> list[dict]:
+    """Chart-pattern breakouts since the last scan (patterns.py).
+
+    Watched stocks alert on any pattern; with pattern_promoter on, any stock
+    alerts on a bullish breakout where promoters were net buyers during the pattern.
+    """
+    if not (s.pattern_watchlist or s.pattern_promoter):
+        return []
+    through = store.last_price_date(BENCHMARK)
+    mark = store.get_meta(PATTERN_MARK)
+    if through is None or (mark is not None and through <= mark):
+        return []
+    store.set_meta(PATTERN_MARK, through)
+    if mark is None:
+        return []  # first run: start from today, don't alert on old breakouts
+    watch = {w["symbol"] for w in store.watchlist()} if s.pattern_watchlist else set()
+    events = analysis.promoter_events(store.load_trades(), market_only=s.market_only)
+    events = events[~events["internal_transfer"]] if not events.empty else events
+    end = pd.Timestamp(through)
+    symbols = set(watch)
+    if s.pattern_promoter and not events.empty:
+        recent = events[(events["direction"] == "buy")
+                        & (events["event_date"] >= end - pd.Timedelta(days=365))]
+        symbols |= set(recent["symbol"])
+    if not symbols:
+        return []
+    det = patterns.scan(sorted(symbols), lambda sym: store.load_bars(nse_ticker(sym)),
+                        since=end - pd.Timedelta(days=730))
+    det = det[det["breakout"] > pd.Timestamp(mark)] if not det.empty else det
+    det = patterns.with_promoter_context(det, events)
+    out = []
+    for _, d in det.iterrows():
+        watched = d["symbol"] in watch
+        if not (watched or (d["direction"] == "bull" and d["promoter_buying"])):
+            continue
+        arrow = "↑" if d["direction"] == "bull" else "↓"
+        flow = (f" · promoters net {'bought' if d['promoter_net_value'] > 0 else 'sold'} "
+                f"{inr(abs(d['promoter_net_value']))} during it") if d["promoter_buys"] else ""
+        out.append({
+            "kind": "pattern",
+            "dedup_key": f"{d['symbol']}:{d['pattern']}:{pd.Timestamp(d['breakout']).date()}",
+            "symbol": d["symbol"], "company": None,
+            "direction": "buy" if d["direction"] == "bull" else "sell",
+            "value": float(d["promoter_net_value"]) or None,
+            "event_date": pd.Timestamp(d["breakout"]).date().isoformat(),
+            "title": f"{d['symbol']}: {d['name'].lower()} breakout {arrow} at ₹{d['breakout_price']:,.2f}",
+            "detail": f"through ₹{d['level']:,.2f} · textbook target ₹{d['target']:,.2f}{flow}",
+        })
+    return out

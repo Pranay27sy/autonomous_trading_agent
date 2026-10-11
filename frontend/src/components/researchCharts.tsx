@@ -38,7 +38,13 @@ export interface StudyGroup {
   points: { day: number; mean: number | null; lo: number | null; hi: number | null; n: number }[];
 }
 
+// Groups without a fixed colour (e.g. pattern names) take the next from this palette.
+const PALETTE = ["#f5a524", "#42a5f5", "#ab47bc", "#26a69a", "#ef5350", "#e6e9ef", "#8b95a7"];
+const groupColor = (name: string, i: number) => GROUP_COLORS[name] ?? PALETTE[i % PALETTE.length]!;
+
 const GROUP_COLORS: Record<string, string> = {
+  "Promoters buying during the pattern": COLORS.buy,
+  "No promoter buying": COLORS.muted,
   "Promoter buys": COLORS.buy,
   "Promoter sells": COLORS.sell,
   "High (60+)": COLORS.buy,
@@ -72,6 +78,13 @@ export function EventStudyChart({ groups, before, after }: { groups: StudyGroup[
 
   return (
     <div style={{ position: "relative" }}>
+      <div className="legend" style={{ marginBottom: 6, flexWrap: "wrap" }}>
+        {groups.map((g, i) => (
+          <span key={g.group}>
+            <span style={{ color: groupColor(g.group, i) }}>━</span> {g.group} <span className="faint">({g.events.toLocaleString("en-IN")})</span>
+          </span>
+        ))}
+      </div>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Event study" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
         {ticks.map((t) => (
           <g key={t}>
@@ -90,7 +103,7 @@ export function EventStudyChart({ groups, before, after }: { groups: StudyGroup[
         <line x1={x(0)} x2={x(0)} y1={m.t} y2={H - m.b} stroke={COLORS.muted} strokeDasharray="3 3" />
         {groups.map((g) => {
           const pts = g.points.filter((p) => p.mean != null);
-          const color = GROUP_COLORS[g.group] ?? COLORS.accent;
+          const color = groupColor(g.group, groups.indexOf(g));
           const band =
             pts.map((p) => `${x(p.day)},${y(p.hi ?? p.mean!)}`).join(" ") +
             " " +
@@ -111,7 +124,7 @@ export function EventStudyChart({ groups, before, after }: { groups: StudyGroup[
             const p = g.points.find((q) => q.day === hover);
             return (
               <div className="row" key={g.group}>
-                <span style={{ color: GROUP_COLORS[g.group] }}>━</span>
+                <span style={{ color: groupColor(g.group, groups.indexOf(g)) }}>━</span>
                 <span>{g.group}</span>
                 <span className="mono">{pct(p?.mean)}</span>
                 <span className="muted mono">

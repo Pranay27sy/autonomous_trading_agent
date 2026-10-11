@@ -3,13 +3,15 @@ import {
   ColorType,
   CrosshairMode,
   HistogramSeries,
+  LineSeries,
+  LineStyle,
   createChart,
   createSeriesMarkers,
   type SeriesMarker,
   type Time,
 } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Bar, Trade } from "../api";
+import type { Bar, PatternRow, Trade } from "../api";
 import { day, inr, integer, percentPoints, price as fmtPrice } from "../format";
 import { COLORS } from "./charts";
 
@@ -97,6 +99,17 @@ export function tradesByBar(bars: { time: string }[], trades: Trade[]): Map<stri
   return out;
 }
 
+const PATTERN_COLORS = { bull: "#42a5f5", bear: "#ab47bc" } as const;
+const PATTERN_SHORT: Record<string, string> = {
+  head_shoulders: "H&S",
+  inverse_head_shoulders: "iH&S",
+  double_top: "M top",
+  double_bottom: "W bottom",
+  cup_handle: "Cup",
+  ascending_triangle: "Asc △",
+  descending_triangle: "Desc △",
+};
+
 const alpha = (hex: string, a: number) =>
   `rgba(${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)}, ${a})`;
 
@@ -104,14 +117,37 @@ const alpha = (hex: string, a: number) =>
  * Japanese candlesticks with volume, plus promoter buys (▲ below the bar) and
  * sells (▼ above), sized by rupee value.
  */
-export function PriceChart({ bars, trades, interval }: { bars: Bar[]; trades: Trade[]; interval: Interval }) {
+export function PriceChart({
+  bars,
+  trades,
+  interval,
+  patterns = [],
+}: {
+  bars: Bar[];
+  trades: Trade[];
+  interval: Interval;
+  /** Detected chart patterns to draw: swing points, the neckline/rim, and a breakout marker. */
+  patterns?: PatternRow[];
+}) {
   const box = useRef<HTMLDivElement>(null);
-  const [tip, setTip] = useState<{ candle: Candle; trades: Trade[] } | null>(null);
+  const [tip, setTip] = useState<{ candle: Candle; trades: Trade[]; patterns: PatternRow[] } | null>(null);
   const candles = useMemo(() => {
     const daily = toCandles(bars);
     return interval === "W" ? toWeekly(daily) : daily;
   }, [bars, interval]);
   const byBar = useMemo(() => tradesByBar(candles, trades), [candles, trades]);
+  // Only patterns that break out inside the chart's range, keyed by their breakout bar.
+  const shown = useMemo(() => patterns.filter((p) => candles.length && p.start >= candles[0]!.time), [patterns, candles]);
+  const patternsByBar = useMemo(() => {
+    const out = new Map<string, PatternRow[]>();
+    for (const p of shown) {
+      const i = asofIndex(candles, p.breakout);
+      if (i < 0) continue;
+      const t = candles[i]!.time;
+      out.set(t, [...(out.get(t) ?? []), p]);
+    }
+    return out;
+  }, [shown, candles]);
 
   useEffect(() => {
     if (!box.current) return;
@@ -176,6 +212,42 @@ export function PriceChart({ bars, trades, interval }: { bars: Bar[]; trades: Tr
         });
       }
     }
+    // Patterns: dotted line through the swing points, dashed neckline/rim, labelled breakout.
+    const snap = (t: string) => {
+      const i = asofIndex(candles, t);
+      return i < 0 ? null : candles[i]!.time;
+    };
+    for (const p of shown) {
+      const color = PATTERN_COLORS[p.direction];
+      const quiet = { lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false };
+      const pts = [...new Map(p.points.map((x) => [snap(x.time), x.price])).entries()].filter(
+        (e): e is [string, number] => e[0] != null,
+      );
+      if (pts.length > 1) {
+        const swing = chart.addSeries(LineSeries, { ...quiet, color: alpha(color, 0.8), lineWidth: 1, lineStyle: LineStyle.Dotted });
+        swing.setData(pts.map(([time, value]) => ({ time: time as Time, value })));
+      }
+      const [a, b] = [snap(p.line[0]!.time), snap(p.line[1]!.time)];
+      if (a && b && a < b) {
+        const neck = chart.addSeries(LineSeries, { ...quiet, color, lineWidth: 1, lineStyle: LineStyle.Dashed });
+        neck.setData([
+          { time: a as Time, value: p.line[0]!.price },
+          { time: b as Time, value: p.line[1]!.price },
+        ]);
+      }
+    }
+    for (const [time, group] of patternsByBar) {
+      for (const p of group) {
+        markers.push({
+          time: time as Time,
+          position: p.direction === "bull" ? "belowBar" : "aboveBar",
+          shape: "circle",
+          color: PATTERN_COLORS[p.direction],
+          size: 0.6,
+          text: PATTERN_SHORT[p.pattern] ?? p.name,
+        });
+      }
+    }
     markers.sort((a, b) => String(a.time).localeCompare(String(b.time)));
     createSeriesMarkers(candle, markers);
 
@@ -190,10 +262,10 @@ export function PriceChart({ bars, trades, interval }: { bars: Bar[]; trades: Tr
     const byTime = new Map(candles.map((c) => [c.time, c]));
     chart.subscribeCrosshairMove((param) => {
       const c = param.time && param.point ? byTime.get(String(param.time)) : undefined;
-      setTip(c ? { candle: c, trades: byBar.get(c.time) ?? [] } : null);
+      setTip(c ? { candle: c, trades: byBar.get(c.time) ?? [], patterns: patternsByBar.get(c.time) ?? [] } : null);
     });
     return () => chart.remove();
-  }, [candles, trades, byBar, interval]);
+  }, [candles, trades, byBar, interval, shown, patternsByBar]);
 
   const c = tip?.candle;
   const change = c ? c.close / c.open - 1 : 0;
@@ -230,6 +302,16 @@ export function PriceChart({ bars, trades, interval }: { bars: Bar[]; trades: Tr
             </div>
           ))}
           {tip.trades.length > 4 && <div className="muted">+{tip.trades.length - 4} more</div>}
+          {tip.patterns.map((p) => (
+            <div className="row" key={p.pattern}>
+              <span className="chip" style={{ color: PATTERN_COLORS[p.direction], background: alpha(PATTERN_COLORS[p.direction], 0.15) }}>
+                {p.direction === "bull" ? "↑" : "↓"} pattern
+              </span>
+              <span>
+                {p.name} breakout through {fmtPrice(p.level)} · target {fmtPrice(p.target)}
+              </span>
+            </div>
+          ))}
         </div>
       )}
     </div>

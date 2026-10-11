@@ -114,4 +114,5 @@ export const KIND_LABEL = {
   cluster: "cluster",
   pledge: "pledge",
   screen: "screen",
+  pattern: "pattern",
 } as const;

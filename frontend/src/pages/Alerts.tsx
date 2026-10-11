@@ -183,6 +183,16 @@ function RulesCard() {
           onChange={(v) => set({ pledge_invocations: v })}
         />
         <Switch
+          label="Chart-pattern breakouts in watched stocks"
+          checked={rules.pattern_watchlist}
+          onChange={(v) => set({ pattern_watchlist: v })}
+        />
+        <Switch
+          label="Bullish pattern breakouts in any stock where promoters were buying during the pattern"
+          checked={rules.pattern_promoter}
+          onChange={(v) => set({ pattern_promoter: v })}
+        />
+        <Switch
           label="Open-market trades only (ignore gifts, pledges, ESOPs…)"
           checked={rules.market_only}
           onChange={(v) => set({ market_only: v })}

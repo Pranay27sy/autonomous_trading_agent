@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-from promoter_tracker import api, service
+from promoter_tracker import api, patterns, service
 from promoter_tracker.config import Settings
 from promoter_tracker.nse_client import parse_response
 from promoter_tracker.prices import BENCHMARK
@@ -342,3 +342,41 @@ def test_screener_and_saved_screens(client):
     assert s["name"] == "Pairs" and s["last_matches"] == ["ABCLTD"]
     assert client.delete(f"/api/screens/{s['id']}").json() == {"deleted": s["id"]}
     assert client.delete(f"/api/screens/{s['id']}").status_code == 404
+
+
+def test_pattern_endpoints(client):
+    stats = client.get("/api/patterns/stats").json()
+    assert [p["pattern"] for p in stats["patterns"]] == list(patterns.PATTERNS)
+    assert stats["total"] >= 0
+    recent = client.get("/api/patterns/recent", params={"days": 365}).json()
+    assert {"rows", "through"} <= set(recent)
+    for r in recent["rows"]:
+        assert r["direction"] in ("bull", "bear") and r["points"] and len(r["line"]) == 2
+    assert client.get("/api/patterns/recent", params={"pattern": "DROP TABLE"}).status_code == 422
+    study = client.get("/api/patterns/study", params={"split": "promoter"}).json()
+    assert {"before", "after", "groups"} <= set(study)
+    assert "patterns" in client.get("/api/stocks/ABCLTD", params=ALL).json()
+
+
+def test_concurrent_requests_share_one_computation(client, monkeypatch):
+    import threading
+    import time
+
+    calls = []
+    real = patterns.scan
+
+    def slow_scan(*a, **k):
+        calls.append(1)
+        time.sleep(0.3)
+        return real(*a, **k)
+
+    monkeypatch.setattr(patterns, "scan", slow_scan)
+    client.app.state.store.mark_refreshed()  # new data version: nothing cached yet
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(
+        client.get("/api/patterns/stats").status_code)) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results == [200, 200, 200] and len(calls) == 1
