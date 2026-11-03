@@ -36,6 +36,7 @@ const researchPage = () => import("./pages/Research").then((m) => ({ Component: 
 const marketPage = () => import("./pages/Market").then((m) => ({ Component: m.Market }));
 const comparePage = () => import("./pages/Compare").then((m) => ({ Component: m.Compare }));
 const patternsPage = () => import("./pages/Patterns").then((m) => ({ Component: m.Patterns }));
+const chartPage = () => import("./pages/Chart").then((m) => ({ Component: m.Chart }));
 
 const router = createBrowserRouter([
   {
@@ -56,6 +57,9 @@ const router = createBrowserRouter([
       // The stock page carries the charting library; load it on first visit.
       { path: "stock", lazy: stockPage },
       { path: "stock/:symbol", lazy: stockPage },
+      // Full-screen interactive chart: drawing tools, indicators, zoom.
+      { path: "chart", lazy: chartPage },
+      { path: "chart/:symbol", lazy: chartPage },
       {
         path: "*",
         element: (

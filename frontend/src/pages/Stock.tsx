@@ -83,6 +83,9 @@ function StockView({ symbol, stocks }: { symbol: string; stocks: StockListItem[]
             <Link className="btn" to={{ pathname: "/compare", search: compareSearch(search, symbol) }}>
               ⇄ Compare
             </Link>
+            <Link className="btn" to={{ pathname: `/chart/${encodeURIComponent(symbol)}`, search }} title="Drawing tools, indicators and full screen">
+              ⤢ Full chart
+            </Link>
           </div>
           {(q.data.sector || q.data.cap_bucket) && (
             <p className="muted" style={{ margin: "-8px 0 16px", fontSize: 13 }}>

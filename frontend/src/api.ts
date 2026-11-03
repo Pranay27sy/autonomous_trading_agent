@@ -1,4 +1,5 @@
 // Typed client for the FastAPI backend (promoter_tracker/api.py).
+import type { Drawing } from "./chart/drawings";
 import type { Filters } from "./filters";
 import { filtersToParams } from "./filters";
 
@@ -626,4 +627,19 @@ export const api = {
   saveAlertSettings: (rules: AlertRules) =>
     request<AlertSettings>("/api/alerts/settings", { method: "PUT", json: rules }),
   testAlert: () => request<{ sent: string[]; errors: string[] }>("/api/alerts/test", { method: "POST" }),
+  drawings: (symbol: string) => request<SavedDrawings>(`/api/drawings/${encodeURIComponent(symbol)}`),
+  /** keepalive lets the save finish while the page is closing. */
+  saveDrawings: (symbol: string, drawings: Drawing[], keepalive = false) =>
+    request<{ symbol: string; saved: number; updated_at: string | null }>(`/api/drawings/${encodeURIComponent(symbol)}`, {
+      method: "PUT",
+      json: { drawings },
+      keepalive,
+    }),
 };
+
+/** Trend lines, notes etc. drawn on a stock's chart (see chart/drawings.ts). */
+export interface SavedDrawings {
+  symbol: string;
+  drawings: Drawing[];
+  updated_at: string | null;
+}

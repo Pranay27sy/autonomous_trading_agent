@@ -95,6 +95,11 @@ CREATE TABLE IF NOT EXISTS company_info (
     shares_outstanding REAL,
     updated_at TEXT NOT NULL   -- also set when the lookup failed, so it isn't retried daily
 );
+CREATE TABLE IF NOT EXISTS drawings (
+    symbol TEXT PRIMARY KEY,
+    drawings TEXT NOT NULL,    -- JSON list of chart drawings (frontend/src/chart/drawings.ts)
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -377,8 +382,30 @@ class Store:
             self.conn.execute("UPDATE screens SET last_matches = ? WHERE id = ?",
                               (json.dumps(matches), screen_id))
 
+    # --- chart drawings -----------------------------------------------------
+    def drawings(self, symbol: str) -> dict:
+        """The trend lines, notes etc. drawn on a stock's chart, and when they were saved."""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT drawings, updated_at FROM drawings WHERE symbol = ?", (symbol,)).fetchone()
+        if row is None:
+            return {"drawings": [], "updated_at": None}
+        return {"drawings": json.loads(row[0]), "updated_at": row[1]}
+
+    def save_drawings(self, symbol: str, drawings: list[dict]) -> str | None:
+        """Replace a stock's drawings (an empty list deletes them). Returns updated_at."""
+        with self._lock, self.conn:
+            if not drawings:
+                self.conn.execute("DELETE FROM drawings WHERE symbol = ?", (symbol,))
+                return None
+            now = _now()
+            self.conn.execute(
+                "INSERT OR REPLACE INTO drawings (symbol, drawings, updated_at) VALUES (?, ?, ?)",
+                (symbol, json.dumps(drawings, separators=(",", ":")), now))
+            return now
+
     # --- company info -------------------------------------------------------
-    COMPANY_FIELDS = ("name", "sector", "industry", "market_cap", "shares_outstanding")
+    COMPANY_FIELDS =("name", "sector", "industry", "market_cap", "shares_outstanding")
 
     def upsert_company_info(self, symbol: str, info: dict) -> None:
         with self._lock, self.conn:
