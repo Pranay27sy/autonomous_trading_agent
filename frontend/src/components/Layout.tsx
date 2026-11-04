@@ -9,7 +9,7 @@ import { CommandPalette } from "./CommandPalette";
 import { AlertBell } from "./watch";
 
 export function Layout() {
-  const { search } = useLocation();
+  const { pathname, search } = useLocation();
   return (
     <>
       <header className="topbar">
@@ -25,6 +25,7 @@ export function Layout() {
           </NavLink>
           <NavLink to={{ pathname: "/trades", search }}>Trades</NavLink>
           <NavLink to={{ pathname: "/stock", search }}>Stock</NavLink>
+          <NavLink to={{ pathname: "/chart", search }}>Chart</NavLink>
           <NavLink to={{ pathname: "/screener", search }}>Screener</NavLink>
           <NavLink to={{ pathname: "/patterns", search }}>Patterns</NavLink>
           <NavLink to={{ pathname: "/market", search }}>Market</NavLink>
@@ -49,7 +50,8 @@ export function Layout() {
       </header>
       <FilterBar />
       <CommandPalette />
-      <main>
+      {/* The chart page uses the full window width. */}
+      <main className={pathname.startsWith("/chart") ? "wide" : undefined}>
         <Outlet />
       </main>
       <footer className="footer">

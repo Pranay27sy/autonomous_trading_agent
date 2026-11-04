@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Trade } from "../api";
-import { asofIndex, toCandles, toWeekly, tradesByBar } from "../components/PriceChart";
+import { asofIndex, toCandles, toWeekly, tradesByBar } from "../chart/candles";
 
 const prices = ["2024-01-01", "2024-01-02", "2024-01-05"].map((time, i) => ({ time, close: 100 + i }));
 

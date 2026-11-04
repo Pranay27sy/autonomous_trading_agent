@@ -14,7 +14,33 @@ dark trading-terminal style. Its main pages:
   in holding %, and the returns that followed (green/red).
 - **Stock:** price chart with buy ▲ / sell ▼ markers sized by rupee value, and per-trade
   returns at +1/+5/+20/+60/+120 trading days, raw and relative to Nifty 50. The selected
-  stock is in the URL, so links can be shared.
+  stock is in the URL, so links can be shared. **⤢ Full chart** opens it on the Chart page.
+
+### Interactive chart
+The **Chart** page is a full-window chart for one stock in the style of a trading terminal,
+built on TradingView's open-source Lightweight Charts:
+- **Zoom and scroll:** mouse wheel or pinch to zoom, drag to pan, drag the price axis to
+  stretch it (double-click it to reset). There are also zoom buttons and the +/− keys, a box-zoom
+  tool (Alt+Z), date ranges from 1M to All, reset (Alt+R) and fit-all, and » to jump back to the
+  latest bar.
+- **Drawing tools:** trend line, ray, extended line, arrow, horizontal line and ray, vertical
+  line, rectangle, parallel channel, Fibonacci retracement, measure (price change, %, bars and
+  days) and text notes. Place them with clicks or by pressing, dragging and releasing. Select a
+  drawing to move it, reshape it by its handles, or change its color, width and line style.
+  Delete removes it, and Ctrl+Z / Ctrl+Y undo and redo. The magnet snaps points to the nearest
+  open, high, low or close, and drawings can be locked or hidden. Alt shortcuts pick tools
+  (hover a tool for its key). Drawings go on the price pane, not inside the indicator panes.
+- **Saved per stock:** drawings are stored in the database (`/api/drawings/{symbol}`), so they
+  come back in any browser. Chart settings (interval, chart type, indicators) are remembered
+  per browser.
+- **Chart types and scales:** daily, weekly or monthly bars as candles, hollow candles, OHLC
+  bars, Heikin Ashi, line or area, on a linear, log or percent price scale.
+- **Indicators:** volume, simple and exponential moving averages, Bollinger Bands and
+  Supertrend on the price; RSI and MACD in panes below. Click an indicator's name in the legend
+  to change its settings or color.
+- **This app's data:** promoter buys ▲ and sells ▼ sized by value (the legend lists them for
+  the bar under the cursor) and, optionally, the patterns from the Patterns page.
+- A **screenshot** button (PNG, drawings included) and **full screen**.
 
 ### Chart patterns
 The **Patterns** page scans every stock with promoter filings for classic chart patterns:
@@ -74,6 +100,7 @@ shows how fresh the data is, lets you start a refresh, and shows its progress.
 | `promoter_tracker/api.py` | FastAPI app: JSON under `/api`, serves the built frontend at `/` |
 | `promoter_tracker/service.py` | Filtering and response shaping for the API (plain pandas) |
 | `frontend/` | React + TypeScript (Vite), TanStack Query, TradingView Lightweight Charts |
+| `frontend/src/chart/` | The Chart page: drawing tools, indicators, and the chart they run on |
 
 ### Data (all free)
 | What | Source |

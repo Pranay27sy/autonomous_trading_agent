@@ -24,7 +24,7 @@ from fastapi import Path as PathParam
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from . import alerts as alert_rules
 from . import analysis, companies, notify, patterns, pledges, research, screener, service
@@ -83,6 +83,33 @@ class ScreenBody(BaseModel):
 
 class MarkRead(BaseModel):
     ids: list[int] | None = Field(default=None, max_length=1000)  # None marks all read
+
+
+# Chart drawings: keep in sync with DRAWING_TYPES in frontend/src/chart/drawings.ts.
+DrawingType = Literal["trend", "ray", "extended", "arrow", "hline", "hray", "vline", "rect",
+                      "channel", "fib", "measure", "text"]
+MAX_DRAWINGS = 1000  # per stock
+
+
+class DrawingPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    time: float = Field(ge=0, le=4_102_444_800, allow_inf_nan=False)  # UTC seconds, to 2100
+    price: float = Field(ge=-1e12, le=1e12, allow_inf_nan=False)
+
+
+class Drawing(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,40}$")
+    type: DrawingType
+    points: list[DrawingPoint] = Field(min_length=1, max_length=3)
+    color: str = Field(pattern=r"^#[0-9a-fA-F]{6}$")
+    width: int = Field(ge=1, le=4)
+    style: Literal["solid", "dashed", "dotted"] = "solid"
+    text: str | None = Field(default=None, max_length=500)
+
+
+class DrawingsBody(BaseModel):
+    drawings: list[Drawing] = Field(max_length=MAX_DRAWINGS)
 
 
 def _now() -> datetime:
@@ -627,6 +654,29 @@ def create_app(settings: Settings | None = None,
         symbol = symbol.upper()
         request.app.state.store.unwatch(symbol)
         return {"symbol": symbol, "watching": False}
+
+    # --- chart drawings ---------------------------------------------------------
+    def chart_symbol(symbol: str) -> str:
+        symbol = symbol.upper()
+        if not SYMBOL_RE.match(symbol):
+            raise HTTPException(422, "Not an NSE symbol")
+        return symbol
+
+    @app.get("/api/drawings/{symbol}")
+    def get_drawings(request: Request, symbol: str) -> dict:
+        symbol = chart_symbol(symbol)
+        return {"symbol": symbol, **request.app.state.store.drawings(symbol)}
+
+    @app.put("/api/drawings/{symbol}")
+    def put_drawings(request: Request, symbol: str, body: DrawingsBody) -> dict:
+        """Replace everything drawn on a stock's chart (an empty list clears it)."""
+        symbol = chart_symbol(symbol)
+        store: Store = request.app.state.store
+        if store.last_price_date(nse_ticker(symbol)) is None:
+            raise HTTPException(404, f"No prices for {symbol}")
+        drawings = [d.model_dump(exclude_none=True) for d in body.drawings]
+        return {"symbol": symbol, "saved": len(drawings),
+                "updated_at": store.save_drawings(symbol, drawings)}
 
     # --- alerts ----------------------------------------------------------------
     @app.get("/api/alerts")

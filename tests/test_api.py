@@ -413,3 +413,43 @@ def test_stock_page_works_without_matching_trades(client):
     assert body["company"] == "Pledge Only Ltd" and body["trades"] == [] and len(body["prices"]) == 2
     assert [p["kind"] for p in body["pledges"]] == ["created"]
     assert client.get("/api/stocks/NOPE", params=ALL).status_code == 404  # unknown stays 404
+
+
+TREND = {"id": "d1", "type": "trend", "color": "#42a5f5", "width": 2, "style": "dashed",
+         "points": [{"time": 1704067200, "price": 101.5}, {"time": 1706745600, "price": 110}]}
+
+
+def test_chart_drawings_round_trip(client):
+    empty = {"symbol": "ABCLTD", "drawings": [], "updated_at": None}
+    assert client.get("/api/drawings/abcltd").json() == empty
+    note = {"id": "d2", "type": "text", "color": "#e6e9ef", "width": 1, "style": "solid",
+            "points": [{"time": 1704067200, "price": 99}], "text": "Support"}
+    r = client.put("/api/drawings/abcltd", json={"drawings": [TREND, note]})
+    assert r.status_code == 200 and r.json()["saved"] == 2 and r.json()["updated_at"]
+    body = client.get("/api/drawings/ABCLTD").json()
+    assert body["drawings"] == [TREND, note] and body["updated_at"]
+    # Saving replaces the whole set; an empty list clears it.
+    client.put("/api/drawings/ABCLTD", json={"drawings": [note]})
+    assert client.get("/api/drawings/ABCLTD").json()["drawings"] == [note]
+    assert client.put("/api/drawings/ABCLTD", json={"drawings": []}).json()["updated_at"] is None
+    assert client.get("/api/drawings/ABCLTD").json() == empty
+
+
+def test_chart_drawings_are_validated(client):
+    def put(drawing, symbol="ABCLTD"):
+        return client.put(f"/api/drawings/{symbol}", json={"drawings": [drawing]}).status_code
+
+    assert put(TREND) == 200
+    assert put({**TREND, "type": "spiral"}) == 422
+    assert put({**TREND, "color": "red"}) == 422
+    assert put({**TREND, "width": 9}) == 422
+    assert put({**TREND, "onclick": "x"}) == 422  # unknown fields are refused
+    assert put({**TREND, "points": TREND["points"] * 2}) == 422
+    assert put({**TREND, "points": [{"time": 1, "price": 1e13}]}) == 422
+    assert put({**TREND, "text": "x" * 501}) == 422
+    assert put(TREND, symbol="NOPRICES") == 404  # no chart to draw on
+    assert put(TREND, symbol="bad$sym") == 422
+    too_many = [{**TREND, "id": f"d{i}"} for i in range(api.MAX_DRAWINGS + 1)]
+    assert client.put("/api/drawings/ABCLTD", json={"drawings": too_many}).status_code == 422
+    evil = {"Origin": "https://evil.example"}
+    assert client.put("/api/drawings/ABCLTD", json={"drawings": []}, headers=evil).status_code == 403
