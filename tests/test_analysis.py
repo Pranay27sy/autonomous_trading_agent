@@ -129,3 +129,31 @@ def test_each_sell_pairs_with_one_buy_only():
     trades = pd.DataFrame([_ev("A", "Buy", 1000), _ev("B", "Buy", 1000), _ev("C", "Sell", 1000)])
     ev = analysis.promoter_events(trades)
     assert ev["internal_transfer"].sum() == 2  # C with one of A/B; the other buy is real
+
+
+def test_missing_text_fields_do_not_break_the_filters(tmp_path):
+    # A filing can lack a field; pandas 3 reads a NULL among text as NaN (a float), not None.
+    store = Store(tmp_path / "t.db")
+    blank = {"symbol": "NULLS", "company": "Nulls Ltd", "quantity": 10.0, "value": 5e6,
+             "disclosure_date": "2024-02-01", "trade_to": "2024-02-01"}
+    store.upsert_trades(parse_response(json.loads(FIXTURE.read_text())) + [
+        {**blank, "person": "No mode", "category": "Promoters", "txn_type": "Buy", "mode": None},
+        {**blank, "person": "No category", "category": None, "txn_type": "Buy", "mode": "Market Purchase"},
+        {**blank, "person": "No type", "category": "Promoters", "txn_type": None, "mode": "Gift"},
+    ])
+    trades = store.load_trades()
+    store.close()
+    assert "NULLS" not in set(analysis.promoter_events(trades)["symbol"])  # none is a market trade
+    every = analysis.promoter_events(trades, market_only=False)
+    assert list(every.loc[every["symbol"] == "NULLS", "person"]) == ["No mode"]
+    assert not analysis.is_promoter(float("nan")) and not analysis.is_market_trade(None)
+    assert analysis.trade_direction(float("nan"), float("nan")) is None
+
+
+def test_no_qualifying_filing_still_gives_every_column(trades):
+    # Only a pledge, or only a director's trade: an empty table with its columns, not a KeyError.
+    for only in (trades[trades["mode"] == "Pledge Creation"], trades[trades["person"] == "Anil Mehta"]):
+        assert len(only) == 1
+        ev = analysis.promoter_events(only)
+        assert ev.empty and {"trade_to", "direction", "event_date", "returns_valid", "signed_value",
+                             "internal_transfer"} <= set(ev.columns)

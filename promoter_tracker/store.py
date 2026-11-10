@@ -192,14 +192,18 @@ class Store:
                 f"({', '.join('?' * len(part))})", part))
         return found
 
-    def load_trades(self, seen_after: str | None = None) -> pd.DataFrame:
-        """All trades, or only those first stored after the ISO time seen_after."""
+    def load_trades(self, seen_after: str | None = None, symbol: str | None = None) -> pd.DataFrame:
+        """All trades, or only those first stored after the ISO time seen_after / of one symbol."""
+        where, params = [], []
+        if seen_after is not None:
+            where.append("first_seen > ?")
+            params.append(seen_after)
+        if symbol is not None:
+            where.append("symbol = ?")
+            params.append(symbol)
+        sql = "SELECT * FROM trades" + (" WHERE " + " AND ".join(where) if where else "")  # noqa: S608 (constant clauses)
         with self._lock:
-            if seen_after is None:
-                df = pd.read_sql_query("SELECT * FROM trades", self.conn)
-            else:
-                df = pd.read_sql_query("SELECT * FROM trades WHERE first_seen > ?", self.conn,
-                                       params=(seen_after,))
+            df = pd.read_sql_query(sql, self.conn, params=params)
         for col in ("trade_from", "trade_to", "intimation_date", "disclosure_date"):
             df[col] = pd.to_datetime(df[col], errors="coerce")
         df["disclosure_estimated"] = df["disclosure_estimated"].fillna(0).astype(bool)
@@ -405,7 +409,7 @@ class Store:
             return now
 
     # --- company info -------------------------------------------------------
-    COMPANY_FIELDS =("name", "sector", "industry", "market_cap", "shares_outstanding")
+    COMPANY_FIELDS = ("name", "sector", "industry", "market_cap", "shares_outstanding")
 
     def upsert_company_info(self, symbol: str, info: dict) -> None:
         with self._lock, self.conn:

@@ -1,13 +1,16 @@
 """Turn newly stored promoter trades into alerts.
 
-After each refresh, scan() looks at trades first stored since the previous scan
-and raises an alert for:
+After each refresh, scan_trades() looks at trades first stored since the previous
+scan and raises an alert for:
   - any promoter buy/sell in a watchlisted stock,
   - large promoter buys or sells in any stock (thresholds in AlertSettings),
   - a buying cluster: several promoters buying the same stock within a window.
 Each alert is stored once (per trade, or per cluster), so overlapping refresh
 windows don't repeat them. The very first scan only sets a baseline, so turning
 alerts on doesn't flood you with your whole history.
+
+A scan stores its alerts before it moves its high-water mark, so one that fails
+part-way is simply done again by the next refresh instead of losing alerts.
 """
 from __future__ import annotations
 
@@ -187,15 +190,16 @@ def pledge_alerts(new_trades: pd.DataFrame, watchlist: set[str], s: AlertSetting
     return out
 
 
-def screen_alerts(store: Store, events: pd.DataFrame) -> list[dict]:
-    """Stocks that newly match a saved screen with alerts on.
+def screen_alerts(store: Store, events: pd.DataFrame) -> tuple[list[dict], dict[int, list[str]]]:
+    """Stocks that newly match a saved screen with alerts on, and each screen's matches now.
 
     Each screen remembers its matches; a stock alerts when it enters, and again
-    only if it leaves and later re-enters with a newer trade.
+    only if it leaves and later re-enters with a newer trade. The caller saves the
+    matches (by screen id) once the alerts are stored.
     """
     screens = [sc for sc in store.screens() if sc["alert"]]
     if not screens or events.empty:
-        return []
+        return [], {}
 
     def closes(sym: str) -> pd.Series:
         return store.load_prices(nse_ticker(sym))
@@ -205,7 +209,7 @@ def screen_alerts(store: Store, events: pd.DataFrame) -> list[dict]:
         ev = conviction.add_conviction(ev, lambda sym: store.load_bars(nse_ticker(sym)))
     pe = pledges.pledge_events(store.load_trades(), closes)
     risk = {p["symbol"]: p["risk"] for p in pledges.summarize(pe)} if not pe.empty else {}
-    out = []
+    out, matches = [], {}
     for sc in screens:
         c = screener.Criteria.from_dict(sc["criteria"])
         rows = screener.screen(screener.metrics(ev, closes, c.lookback_days, risk), c)
@@ -221,22 +225,18 @@ def screen_alerts(store: Store, events: pd.DataFrame) -> list[dict]:
                 "detail": f"net promoter flow {inr(r['net_value'])} · {int(r['buys'])} buys by "
                           f"{int(r['promoters'])} promoters in {c.lookback_days} days",
             })
-        store.set_screen_matches(sc["id"], sorted(rows["symbol"]))
-    return out
+        matches[sc["id"]] = sorted(rows["symbol"])
+    return out, matches
 
 
 def scan(store: Store) -> list[dict]:
     """Raise alerts for new trades and new chart-pattern breakouts. Returns the new alerts."""
+    return scan_trades(store) + scan_patterns(store)
+
+
+def scan_trades(store: Store) -> list[dict]:
+    """Raise alerts from trades stored since the last scan. Returns the new alerts."""
     s = AlertSettings.load(store)
-    raised = _trade_alerts(store, s) + pattern_alerts(store, s)
-    added = store.add_alerts(raised)
-    if added:
-        log.info("Raised %d alerts", len(added))
-    return added
-
-
-def _trade_alerts(store: Store, s: AlertSettings) -> list[dict]:
-    """Alerts from trades stored since the last scan."""
     mark = store.get_meta(SCAN_MARK)
     latest = store.max_first_seen()
     if mark is None:
@@ -257,29 +257,49 @@ def _trade_alerts(store: Store, s: AlertSettings) -> list[dict]:
     watch = {w["symbol"] for w in store.watchlist()}
     raised = evaluate(new_events, all_events, watch, s) if not new_events.empty else []
     raised += pledge_alerts(new, watch, s, lambda sym: store.load_prices(nse_ticker(sym)))
-    raised += screen_alerts(store, all_events)
+    entered, matches = screen_alerts(store, all_events)
+    added = _store(store, raised + entered)
+    # Only now that the alerts are stored. Had anything failed before this, the next scan
+    # would find the same trades new and the same stocks entering, and raise them then.
+    for screen_id, symbols in matches.items():
+        store.set_screen_matches(screen_id, symbols)
     store.set_meta(SCAN_MARK, latest or mark)
-    return raised
+    return added
+
+
+def _store(store: Store, raised: list[dict]) -> list[dict]:
+    added = store.add_alerts(raised)
+    if added:
+        log.info("Raised %d alerts", len(added))
+    return added
 
 
 PATTERN_MARK = "patterns_scanned_through"  # meta key: latest price date already scanned
 
 
-def pattern_alerts(store: Store, s: AlertSettings) -> list[dict]:
-    """Chart-pattern breakouts since the last scan (patterns.py).
-
-    Watched stocks alert on any pattern; with pattern_promoter on, any stock
-    alerts on a bullish breakout where promoters were net buyers during the pattern.
-    """
+def scan_patterns(store: Store) -> list[dict]:
+    """Raise alerts for chart-pattern breakouts since the last scan. Returns the new alerts."""
+    s = AlertSettings.load(store)
     if not (s.pattern_watchlist or s.pattern_promoter):
         return []
     through = store.last_price_date(BENCHMARK)
     mark = store.get_meta(PATTERN_MARK)
     if through is None or (mark is not None and through <= mark):
         return []
-    store.set_meta(PATTERN_MARK, through)
     if mark is None:
+        store.set_meta(PATTERN_MARK, through)
         return []  # first run: start from today, don't alert on old breakouts
+    added = _store(store, pattern_alerts(store, s, mark, through))
+    store.set_meta(PATTERN_MARK, through)  # last, so a scan that failed runs again
+    return added
+
+
+def pattern_alerts(store: Store, s: AlertSettings, mark: str, through: str) -> list[dict]:
+    """Chart-pattern breakouts (patterns.py) after the date `mark`, in prices up to `through`.
+
+    Watched stocks alert on any pattern; with pattern_promoter on, any stock
+    alerts on a bullish breakout where promoters were net buyers during the pattern.
+    """
     watch = {w["symbol"] for w in store.watchlist()} if s.pattern_watchlist else set()
     events = analysis.promoter_events(store.load_trades(), market_only=s.market_only)
     events = events[~events["internal_transfer"]] if not events.empty else events

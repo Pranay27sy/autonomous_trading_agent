@@ -73,6 +73,15 @@ class _Prices:
         return self.cache[sym]
 
 
+def _asof(series: pd.Series, when) -> float:
+    """The last value at or before `when`; NaN if there is none.
+
+    Series.asof raises IndexError on an empty series, which is what the benchmark
+    is until its first download succeeds.
+    """
+    return series.asof(when) if len(series) else float("nan")
+
+
 def _bootstrap_ci(x: np.ndarray, n: int = 2000, seed: int = 7) -> tuple[float, float]:
     if len(x) < 2:
         return (float("nan"), float("nan"))
@@ -99,7 +108,7 @@ def backtest(events: pd.DataFrame, closes: Closes, bench: pd.Series, rule: Rule)
             continue  # not enough history after the event yet
         entry, exit_ = p.index[i], p.index[i + rule.hold_days]
         ret = p.iloc[i + rule.hold_days] / p.iloc[i] - 1
-        b0, b1 = px.bench.asof(entry), px.bench.asof(exit_)
+        b0, b1 = _asof(px.bench, entry), _asof(px.bench, exit_)
         bret = b1 / b0 - 1 if pd.notna(b0) and pd.notna(b1) and b0 else np.nan
         trades.append({
             "symbol": e["symbol"], "company": e.get("company"), "person": e.get("person"),
@@ -125,13 +134,14 @@ def backtest(events: pd.DataFrame, closes: Closes, bench: pd.Series, rule: Rule)
     port = port.reindex(days.union(port.index)).fillna(0.0)
     invested = stacked.notna().any(axis=1).reindex(port.index, fill_value=False)
     equity = (1 + port).cumprod()
-    bench_eq = (px.bench.reindex(port.index).ffill() / px.bench.asof(port.index[0]))
+    bench_eq = px.bench.reindex(port.index).ffill() / _asof(px.bench, port.index[0])
     years = max((port.index[-1] - port.index[0]).days / 365.25, 1e-9)
 
     stats = {
         "trades": len(t),
         "stocks": int(t["symbol"].nunique()),
-        "hit_rate": float((t["excess"] > 0).mean()),
+        # Of the trades that can be compared with the benchmark, like the excess stats below.
+        "hit_rate": float((exc > 0).mean()) if len(exc) else None,
         "mean_return": float(t["return"].mean()),
         "median_return": float(t["return"].median()),
         "mean_excess": float(np.mean(exc)) if len(exc) else None,
@@ -165,6 +175,8 @@ def event_study(events: pd.DataFrame, closes: Closes, bench: pd.Series,
     rebased to 0 at day 0, so days before show what happened ahead of the
     trade. groups: "side" (buys vs sells) or "conviction" (buy tiers).
     """
+    if events.empty:  # nothing to study, and no conviction column to group by
+        return {"before": before, "after": after, "groups": []}
     e = events[~events["internal_transfer"] & events["returns_valid"]]
     if groups == "conviction":
         e = e[(e["direction"] == "buy") & e["conviction"].notna()]
@@ -192,7 +204,7 @@ def study_by_label(e: pd.DataFrame, label: pd.Series, closes: Closes, bench: pd.
             j = np.arange(i - before, min(i + after, len(p) - 1) + 1)
             stock = p.iloc[j].to_numpy() / p.iloc[i] - 1
             b = px.bench.reindex(p.index[j], method="ffill").to_numpy()
-            b0 = px.bench.asof(p.index[i])
+            b0 = _asof(px.bench, p.index[i])
             if not b0 or np.isnan(b0):
                 continue
             path = np.full(len(offsets), np.nan)

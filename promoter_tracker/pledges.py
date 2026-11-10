@@ -14,15 +14,15 @@ from typing import Callable
 
 import pandas as pd
 
-from .analysis import is_promoter
+from .analysis import as_text, is_promoter
 
 KINDS = ("created", "released", "invoked")
 RECENT_DAYS = 90  # an invocation this recent marks a company high risk
 
 
 def classify(txn_type: str | None, mode: str | None) -> str | None:
-    t = (txn_type or "").strip().lower()
-    m = (mode or "").strip().lower()
+    t = as_text(txn_type).strip().lower()
+    m = as_text(mode).strip().lower()
     if "invoke" in t or "invocation" in m:
         return "invoked"
     if "revoke" in t or any(w in m for w in ("release", "revocation", "revokation")):
@@ -38,8 +38,9 @@ def pledge_events(trades: pd.DataFrame, closes: Callable[[str], pd.Series]) -> p
             "holding_before_pct", "holding_after_pct", "trade_key"]
     if trades.empty:
         return pd.DataFrame(columns=cols)
-    p = trades[trades["category"].map(is_promoter)].copy()
-    p["kind"] = [classify(t, m) for t, m in zip(p["txn_type"], p["mode"], strict=True)]
+    p = trades[trades["category"].map(is_promoter).astype(bool)].copy()
+    p["kind"] = pd.Series([classify(t, m) for t, m in zip(p["txn_type"], p["mode"], strict=True)],
+                          index=p.index, dtype=object)
     p = p[p["kind"].notna()]
     p["event_date"] = p["disclosure_date"].fillna(p["trade_to"])
     p = p[p["event_date"].notna()]

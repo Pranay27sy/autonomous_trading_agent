@@ -162,11 +162,18 @@ def _refresh_all(store, backfill_days, client, downloader, today, progress, sinc
 
 def _raise_alerts(store: Store, result: RefreshResult, progress, channels) -> None:
     # Alerts are a side effect of the refresh: a failure here is a warning, not an error.
+    new: list[dict] = []
+    # One scan at a time, so that if one fails the other's alerts are still raised and sent.
+    for scan in (alerts.scan_trades, alerts.scan_patterns):
+        try:
+            new += scan(store)
+        except Exception as err:
+            log.exception("Alert scan failed")
+            result.warnings.append(f"Alerts: {err}")
+    result.alerts = len(new)
+    if not new:
+        return
     try:
-        new = alerts.scan(store)
-        result.alerts = len(new)
-        if not new:
-            return
         progress(f"{len(new)} new alert{'s' if len(new) != 1 else ''}")
         settings = load_settings()
         channels = notify.channels_from(settings) if channels is None else channels
@@ -175,7 +182,7 @@ def _raise_alerts(store: Store, result: RefreshResult, progress, channels) -> No
             store.mark_alerts_notified([a["id"] for a in new])
         result.warnings.extend(failed)
     except Exception as err:
-        log.exception("Alert scan failed")
+        log.exception("Sending alerts failed")
         result.warnings.append(f"Alerts: {err}")
 
 

@@ -13,7 +13,7 @@ import threading
 import time
 from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated, Literal
@@ -114,6 +114,14 @@ class DrawingsBody(BaseModel):
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def nse_symbol(symbol: str) -> str:
+    """The symbol from a URL, upper-cased; a 422 unless it could be an NSE symbol."""
+    symbol = symbol.upper()
+    if not SYMBOL_RE.fullmatch(symbol):  # fullmatch: `$` alone would let a trailing newline by
+        raise HTTPException(422, "Not an NSE symbol")
+    return symbol
 
 
 class RefreshManager:
@@ -222,12 +230,21 @@ def create_app(settings: Settings | None = None,
             app.state.refresh.start(365)
         # Computing returns takes seconds on a full database; do the default view now
         # so the first page load doesn't wait for it.
+        closing = threading.Event()
+
         def warm():
-            app.state.events.get(True, "disclosure_date")
-            pattern_data(SimpleNamespace(app=app))  # ~20s across all stocks
+            try:
+                app.state.events.get(True, "disclosure_date")
+                pattern_data(SimpleNamespace(app=app))  # ~20s across all stocks
+            except Exception:
+                # The request that needs these computes them itself and reports the failure;
+                # once the app is shutting down the database is closed and nothing is wrong.
+                if not closing.is_set():
+                    log.exception("Warming the caches failed")
 
         threading.Thread(target=warm, name="warm-cache", daemon=True).start()
         yield
+        closing.set()
         store.close()
 
     app = FastAPI(title="Promoter tracker", version="0.3.0", lifespan=lifespan,
@@ -344,15 +361,17 @@ def create_app(settings: Settings | None = None,
         min_stake_pct: Annotated[float | None, Query(ge=0, le=100)] = None,
         sectors: Annotated[str, Query(max_length=500)] = "",
         caps: Annotated[str, Query(max_length=200)] = "",
-        start: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
-        end: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+        start: date | None = None,  # a real calendar date, so 2024-13-45 is a 422, not a crash
+        end: date | None = None,
         one_per_stock_days: Annotated[int, Query(ge=0, le=365)] = 0,
         market_only: bool = True,
         basis: Literal["disclosure_date", "trade_to"] = "disclosure_date",
     ) -> dict:
         rule = research.Rule(side, hold_days, min_value, min_conviction, min_stake_pct,
                              tuple(s for s in sectors.split(",") if s),
-                             tuple(c for c in caps.split(",") if c), start, end, one_per_stock_days)
+                             tuple(c for c in caps.split(",") if c),
+                             start.isoformat() if start else None,
+                             end.isoformat() if end else None, one_per_stock_days)
 
         def run():
             events = request.app.state.events.get(market_only, basis)
@@ -593,9 +612,7 @@ def create_app(settings: Settings | None = None,
 
     @app.get("/api/stocks/{symbol}")
     def stock(request: Request, symbol: str, f: F) -> dict:
-        symbol = symbol.upper()
-        if not SYMBOL_RE.match(symbol):
-            raise HTTPException(422, "Not an NSE symbol")
+        symbol = nse_symbol(symbol)
         events, _ = events_for(request, f)
         store: Store = request.app.state.store
         bars = store.load_bars(nse_ticker(symbol))
@@ -603,8 +620,7 @@ def create_app(settings: Settings | None = None,
         if events.empty or symbol not in set(events["symbol"]):
             # No trades under these filters (e.g. only pledges or off-market filings): still
             # show the chart, patterns and pledges if we know the stock at all.
-            filings = store.load_trades()
-            filings = filings[filings["symbol"] == symbol] if not filings.empty else filings
+            filings = store.load_trades(symbol=symbol)
             if filings.empty and bars.empty:
                 raise HTTPException(404, f"No promoter filings or prices for {symbol}")
             info = store.company_info()
@@ -625,11 +641,12 @@ def create_app(settings: Settings | None = None,
         return out
 
     def known_symbol(request: Request, symbol: str) -> str:
-        symbol = symbol.upper()
-        if not SYMBOL_RE.match(symbol):
-            raise HTTPException(422, "Not an NSE symbol")
-        events = request.app.state.events.get(False, "disclosure_date")
-        if events.empty or symbol not in set(events["symbol"]):
+        """A stock with a promoter buy or sell on file, of any mode; a 404 otherwise."""
+        symbol = nse_symbol(symbol)
+        # Its own filings are enough to tell. The cached events for every stock would also
+        # say, but building them (with returns) takes seconds when they aren't cached yet.
+        filings = request.app.state.store.load_trades(symbol=symbol)
+        if analysis.promoter_events(filings, market_only=False).empty:
             raise HTTPException(404, f"No promoter trades for {symbol}")
         return symbol
 
@@ -651,26 +668,20 @@ def create_app(settings: Settings | None = None,
 
     @app.delete("/api/watchlist/{symbol}")
     def unwatch(request: Request, symbol: str) -> dict:
-        symbol = symbol.upper()
+        symbol = nse_symbol(symbol)
         request.app.state.store.unwatch(symbol)
         return {"symbol": symbol, "watching": False}
 
     # --- chart drawings ---------------------------------------------------------
-    def chart_symbol(symbol: str) -> str:
-        symbol = symbol.upper()
-        if not SYMBOL_RE.match(symbol):
-            raise HTTPException(422, "Not an NSE symbol")
-        return symbol
-
     @app.get("/api/drawings/{symbol}")
     def get_drawings(request: Request, symbol: str) -> dict:
-        symbol = chart_symbol(symbol)
+        symbol = nse_symbol(symbol)
         return {"symbol": symbol, **request.app.state.store.drawings(symbol)}
 
     @app.put("/api/drawings/{symbol}")
     def put_drawings(request: Request, symbol: str, body: DrawingsBody) -> dict:
         """Replace everything drawn on a stock's chart (an empty list clears it)."""
-        symbol = chart_symbol(symbol)
+        symbol = nse_symbol(symbol)
         store: Store = request.app.state.store
         if store.last_price_date(nse_ticker(symbol)) is None:
             raise HTTPException(404, f"No prices for {symbol}")
