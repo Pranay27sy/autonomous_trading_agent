@@ -453,3 +453,37 @@ def test_chart_drawings_are_validated(client):
     assert client.put("/api/drawings/ABCLTD", json={"drawings": too_many}).status_code == 422
     evil = {"Origin": "https://evil.example"}
     assert client.put("/api/drawings/ABCLTD", json={"drawings": []}, headers=evil).status_code == 403
+
+
+def test_a_database_without_promoter_buys_or_sells_still_serves_every_page(tmp_path):
+    # e.g. a first refresh that only brought pledge filings: empty pages, not server errors.
+    db = tmp_path / "t.db"
+    store = Store(db)
+    store.upsert_trades([{"symbol": "PLEDGEONLY", "company": "Pledge Only Ltd", "person": "Owner",
+                          "category": "Promoters", "quantity": 1000.0, "value": 47.0,
+                          "txn_type": "Pledge", "mode": "Pledge Creation",
+                          "disclosure_date": "2024-02-01", "trade_to": "2024-02-01"}])
+    days = pd.bdate_range("2023-12-01", periods=260)
+    for ticker in (BENCHMARK, "PLEDGEONLY.NS"):
+        store.upsert_prices(ticker, pd.Series(np.linspace(100, 120, 260), index=days))
+    store.mark_refreshed()
+    store.close()
+    with TestClient(api.create_app(Settings(db_path=db, auto_refresh=False), frontend_dist=None)) as c:
+        for url in ("/api/overview", "/api/trades", "/api/stocks", "/api/sectors", "/api/market",
+                    "/api/people", "/api/pledges", "/api/watchlist", "/api/research/backtest",
+                    "/api/research/event-study", "/api/patterns/stats", "/api/patterns/recent",
+                    "/api/patterns/study", "/api/stocks/PLEDGEONLY"):
+            assert c.get(url).status_code == 200, url
+        assert c.post("/api/screener/run", json={"lookback_days": 365}).status_code == 200
+        assert c.put("/api/watchlist/PLEDGEONLY").status_code == 404  # no buy or sell to watch for
+
+
+def test_research_on_an_empty_database(tmp_path):
+    with make_client(tmp_path, seeded=False) as c:
+        assert c.get("/api/research/event-study").json()["groups"] == []
+        assert c.get("/api/research/backtest").json()["stats"]["trades"] == 0
+
+
+def test_impossible_dates_and_symbols_are_rejected(client):
+    assert client.get("/api/research/backtest", params={"start": "2024-13-45"}).status_code == 422
+    assert client.delete("/api/watchlist/bad$sym").status_code == 422

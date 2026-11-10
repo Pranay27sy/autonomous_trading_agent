@@ -71,3 +71,11 @@ def test_event_study_paths_are_rebased_at_entry():
     # Entries on days 11-14 come before the jump on day 15; the last two enter after it.
     assert pts[10]["mean"] == pytest.approx(0.10 * 4 / 6, abs=1e-5)  # values are rounded to 5 dp
     assert pts[10]["lo"] <= pts[10]["mean"] <= pts[10]["hi"]
+
+
+def test_no_events_or_no_benchmark_gives_empty_results_not_errors():
+    assert research.event_study(pd.DataFrame(), PRICES.__getitem__, BENCH)["groups"] == []
+    # Nifty prices missing (its download failed): the trades are still listed, just not scored.
+    no_bench = pd.Series(dtype=float, index=pd.DatetimeIndex([]))
+    st = research.backtest(EVENTS, PRICES.__getitem__, no_bench, research.Rule(hold_days=20))["stats"]
+    assert st["trades"] == 2 and st["hit_rate"] is None and st["mean_excess"] is None

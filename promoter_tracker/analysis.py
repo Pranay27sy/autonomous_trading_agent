@@ -14,20 +14,29 @@ _EXCLUDED_MODES = ("off market", "gift", "esop", "esos", "inter-se", "inter se",
                    "rights", "scheme", "conversion", "preferential", "allotment")
 
 
-def is_promoter(category: str) -> bool:
-    return "promoter" in (category or "").lower()
+def as_text(value) -> str:
+    """A text cell as a string, '' when it is missing.
+
+    A missing cell is None in the database but NaN once pandas has read it into a
+    text column, and NaN is truthy, so `value or ""` does not cover it.
+    """
+    return value if isinstance(value, str) else ""
 
 
-def trade_direction(txn_type: str, mode: str) -> str | None:
+def is_promoter(category: str | None) -> bool:
+    return "promoter" in as_text(category).lower()
+
+
+def trade_direction(txn_type: str | None, mode: str | None) -> str | None:
     """'buy', 'sell' or None (pledges, invocations and anything unclear)."""
-    t = (txn_type or "").strip().lower()
+    t = as_text(txn_type).strip().lower()
     if t in ("buy", "acquisition", "purchase"):
         return "buy"
     if t in ("sell", "sale", "disposal"):
         return "sell"
     if t:  # Pledge, Revoke, Invoke, ...
         return None
-    m = (mode or "").lower()
+    m = as_text(mode).lower()
     if "purchase" in m or "acquisition" in m:
         return "buy"
     if "sale" in m or "sell" in m or "disposal" in m:
@@ -35,8 +44,8 @@ def trade_direction(txn_type: str, mode: str) -> str | None:
     return None
 
 
-def is_market_trade(mode: str) -> bool:
-    m = (mode or "").lower()
+def is_market_trade(mode: str | None) -> bool:
+    m = as_text(mode).lower()
     return "market" in m and not any(x in m for x in _EXCLUDED_MODES)
 
 
@@ -46,15 +55,18 @@ def promoter_events(trades: pd.DataFrame, market_only: bool = True,
 
     event_date is 'disclosure_date' (when the public could act) or 'trade_to'
     (when the promoter actually traded).
+
+    The result has the same columns whether or not any filing qualifies.
     """
-    if trades.empty:
-        return trades.assign(direction=pd.Series(dtype=str), event_date=pd.Series(dtype="datetime64[ns]"),
-                             internal_transfer=pd.Series(dtype=bool))
-    df = trades[trades["category"].map(is_promoter)].copy()
-    df["direction"] = [trade_direction(t, m) for t, m in zip(df["txn_type"], df["mode"], strict=True)]
+    # .map() over no rows gives an object Series, and indexing a frame with one of
+    # those picks columns (none of them) instead of rows, hence the astype(bool).
+    df = trades[trades["category"].map(is_promoter).astype(bool)].copy()
+    df["direction"] = pd.Series(
+        [trade_direction(t, m) for t, m in zip(df["txn_type"], df["mode"], strict=True)],
+        index=df.index, dtype=object)  # object, so no rows doesn't make it a float column
     df = df[df["direction"].notna()]
     if market_only:
-        df = df[df["mode"].map(is_market_trade)]
+        df = df[df["mode"].map(is_market_trade).astype(bool)]
     fallback = df["disclosure_date"] if event_date != "disclosure_date" else df["trade_to"]
     if event_date == "disclosure_date":
         # A filled-in disclosure date is earlier than the public saw the filing, so
